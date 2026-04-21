@@ -36,6 +36,10 @@ class JoinGameRequest(_Body):
     nickname: NicknameField
 
 
+class CreateGameRequest(_Body):
+    ruleset: str = Field(default="standard", min_length=1, max_length=32)
+
+
 class StartGameRequest(_Body):
     game_id: GameIdField
     player_id: PlayerIdField
@@ -94,8 +98,8 @@ def _next_phase_event(game: Game) -> str:
 
 
 @router.post("/create_game")
-def create_game() -> dict[str, Any]:
-    game = game_service.create_game()
+def create_game(body: CreateGameRequest = CreateGameRequest()) -> dict[str, Any]:
+    game = game_service.create_game(ruleset=body.ruleset)
     return {"game_id": game.id}
 
 

@@ -101,9 +101,9 @@ def _require_card_number(card_number: int) -> None:
         )
 
 
-def create_game() -> Game:
+def create_game(ruleset: str = "standard") -> Game:
     game_id = uuid.uuid4().hex[:8].upper()
-    game = Game(id=game_id)
+    game = Game(id=game_id, ruleset=ruleset)
     store.set_game(game_id, game)
     return game
 
