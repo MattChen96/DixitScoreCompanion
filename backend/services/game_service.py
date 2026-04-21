@@ -2,8 +2,8 @@
 Game service layer.
 
 The only place that mutates game state. Validates inputs against the current
-phase, and delegates phase transitions to :mod:`backend.services.state_machine`
-and scoring to :mod:`backend.services.scoring`.
+phase, delegates phase transitions to :mod:`backend.services.state_machine`,
+and scoring to the rules engine (:mod:`backend.rules.rules_loader`).
 """
 
 import time
@@ -14,8 +14,13 @@ from backend import store
 from backend.models.constants import MAX_CARD_NUMBER, MIN_CARD_NUMBER
 from backend.models.game import Game, Player
 from backend.models.game_phase import GamePhase
-from backend.services import scoring
+from backend.rules.rules_loader import load_rules
 from backend.services.state_machine import advance_phase_by_host, transition_phase
+
+# All scoring lives in the rules engine now. We hold a single instance for
+# the whole process because StandardDixitRules is stateless; per-game rule
+# selection would be a future extension.
+_rules_engine = load_rules("dixit")
 
 # WebSocket "game_error" payload used when two players play the same card.
 DUPLICATE_CARDS_ERROR = "duplicate_cards"
@@ -43,6 +48,22 @@ def _reset_play_cards_round(game: Game) -> None:
         p.card_played = None
         p.vote = None
     game.cards_on_table.clear()
+
+
+def _reset_round_after_next(game: Game) -> None:
+    """Clear per-round fields on NEXT_ROUND → SELECT_NARRATOR.
+
+    This is round lifecycle, not scoring — it runs after both scoring
+    passes have already been applied and prepares a fresh round. Keeping
+    it here (rather than in the rules engine) avoids widening the
+    engine's surface area for logic that isn't rule-dependent.
+    """
+    for p in game.players:
+        p.card_played = None
+        p.vote = None
+    game.cards_on_table.clear()
+    game.score_base_applied = False
+    game.score_bonus_applied = False
 
 
 def _has_duplicate_cards(game: Game) -> bool:
@@ -148,12 +169,10 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     advance_phase_by_host(game, requester_id)
     new_phase = game.phase
 
-    if new_phase == GamePhase.SCORE_BASE:
-        scoring.apply_score_base(game)
-    elif new_phase == GamePhase.SCORE_BONUS:
-        scoring.apply_score_bonus(game)
+    if new_phase in (GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS):
+        _rules_engine.calculate_scores(game)
     elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.SELECT_NARRATOR:
-        scoring.reset_round_after_next(game)
+        _reset_round_after_next(game)
 
     return game
 

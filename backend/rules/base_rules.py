@@ -5,11 +5,11 @@ hook methods below. The methods receive the current ``Game`` object (and,
 where relevant, a ``move`` dict), so a concrete implementation has full
 read access to game state.
 
-No method here may mutate the game directly — that responsibility stays in
-``backend.services.game_service`` and ``backend.services.scoring``. These
-hooks are intended as extension points for alternative rulesets (e.g. a
-simplified variant or a house-rules flavour), not as a replacement for the
-existing service layer.
+The rules engine owns scoring (``calculate_scores``); all other state
+mutation stays in ``backend.services.game_service``. These hooks are
+intended as extension points for alternative rulesets (e.g. a simplified
+variant or a house-rules flavour), not as a replacement for the service
+layer.
 """
 
 from __future__ import annotations
