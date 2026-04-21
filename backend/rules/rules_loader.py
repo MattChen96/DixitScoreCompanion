@@ -59,6 +59,11 @@ def _registry() -> dict[str, type[RulesEngine]]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def available_rulesets() -> list[str]:
+    """Return the sorted list of registered ruleset names."""
+    return sorted(_registry().keys())
+
+
 def load_rules(ruleset_name: str) -> RulesEngine:
     """Return an instance of the rules engine for the given ruleset name.
 

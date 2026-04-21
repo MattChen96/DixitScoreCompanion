@@ -97,6 +97,13 @@ def _next_phase_event(game: Game) -> str:
 # ---------------------------------------------------------------------------
 
 
+@router.get("/rulesets")
+def list_rulesets() -> list[dict[str, str]]:
+    from backend.rules.rules_loader import available_rulesets  # noqa: PLC0415
+
+    return [{"name": name} for name in available_rulesets()]
+
+
 @router.post("/create_game")
 def create_game(body: CreateGameRequest = CreateGameRequest()) -> dict[str, Any]:
     game = game_service.create_game(ruleset=body.ruleset)
