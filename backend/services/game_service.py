@@ -14,13 +14,28 @@ from backend import store
 from backend.models.constants import MAX_CARD_NUMBER, MIN_CARD_NUMBER
 from backend.models.game import Game, Player
 from backend.models.game_phase import GamePhase
+from backend.rules.base_rules import RulesEngine
 from backend.rules.rules_loader import load_rules
 from backend.services.state_machine import advance_phase_by_host, transition_phase
 
-# All scoring lives in the rules engine now. We hold a single instance for
-# the whole process because StandardDixitRules is stateless; per-game rule
-# selection would be a future extension.
-_rules_engine = load_rules("standard")
+# Per-ruleset engine cache. Rulesets are stateless (they only read point
+# values from their JSON config), so a single instance per name is safe
+# and avoids re-reading the config on every next_phase call.
+_engine_cache: dict[str, RulesEngine] = {}
+
+
+def _engine_for(game: Game) -> RulesEngine:
+    """Return the rules engine for a game, loading on first use.
+
+    Uses ``Game.ruleset`` — set at creation and immutable thereafter —
+    so a game started with ``"high_risk"`` scores using ``HighRiskRules``
+    and never gets silently downgraded to standard rules.
+    """
+    engine = _engine_cache.get(game.ruleset)
+    if engine is None:
+        engine = load_rules(game.ruleset)
+        _engine_cache[game.ruleset] = engine
+    return engine
 
 # WebSocket "game_error" payload used when two players play the same card.
 DUPLICATE_CARDS_ERROR = "duplicate_cards"
@@ -102,6 +117,11 @@ def _require_card_number(card_number: int) -> None:
 
 
 def create_game(ruleset: str = "standard") -> Game:
+    # Fail fast on an unknown ruleset name so we never create a game
+    # that would later fail at start or scoring time. The resulting
+    # engine is cached for subsequent _engine_for(game) calls.
+    _engine_cache.setdefault(ruleset, load_rules(ruleset))
+
     game_id = uuid.uuid4().hex[:8].upper()
     game = Game(id=game_id, ruleset=ruleset)
     store.set_game(game_id, game)
@@ -135,6 +155,12 @@ def start_game(game_id: str, requester_id: str) -> Game:
         raise ValueError("Game has already started")
     if len(game.players) < 3:
         raise ValueError("At least 3 players required")
+
+    # Load the rules engine for this game at start time. create_game
+    # already validated the name, but pre-warming here binds the chosen
+    # ruleset to the active session and makes subsequent scoring a
+    # straight cache hit.
+    _engine_for(game)
 
     transition_phase(game, requester_id, GamePhase.SELECT_NARRATOR)
     return game
@@ -170,7 +196,7 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     new_phase = game.phase
 
     if new_phase in (GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS):
-        _rules_engine.calculate_scores(game)
+        _engine_for(game).calculate_scores(game)
     elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.SELECT_NARRATOR:
         _reset_round_after_next(game)
 

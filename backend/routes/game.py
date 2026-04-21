@@ -106,7 +106,10 @@ def list_rulesets() -> list[dict[str, str]]:
 
 @router.post("/create_game")
 def create_game(body: CreateGameRequest = CreateGameRequest()) -> dict[str, Any]:
-    game = game_service.create_game(ruleset=body.ruleset)
+    try:
+        game = game_service.create_game(ruleset=body.ruleset)
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
     return {"game_id": game.id}
 
 
