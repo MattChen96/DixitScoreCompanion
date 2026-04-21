@@ -23,6 +23,11 @@ backend/
 │   ├── __init__.py               # (empty package marker)
 │   ├── game.py                   # REST endpoints + request schemas
 │   └── websocket.py              # /ws/{game_id} endpoint, broadcast + game_wire helpers
+├── rules/                        # Rules engine — structure only; not yet wired into services
+│   ├── __init__.py               # Re-exports RulesEngine + load_rules
+│   ├── base_rules.py             # Abstract RulesEngine base class (ABC)
+│   ├── rules_loader.py           # load_rules(name) → RulesEngine instance
+│   └── standard_dixit.py        # StandardDixitRules stub (no-op); future home of real logic
 └── services/
     ├── __init__.py               # (empty package marker)
     ├── state_machine.py          # ALLOWED_TRANSITIONS, transition_phase, advance_phase_by_host
