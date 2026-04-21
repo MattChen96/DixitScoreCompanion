@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Dixit — scores</title>
+  <style>
+    :root {
+      --bg: #0f1216;
+      --surface: #1a1f27;
+      --text: #e8eaed;
+      --muted: #9aa0a6;
+      --accent: #5c8fbf;
+      --accent-pressed: #4a7399;
+      --danger: #c65d5d;
+      --radius: 12px;
+      --tap: 48px;
+    }
+    * { box-sizing: border-box; touch-action: manipulation; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-text-size-adjust: 100%;
+    }
+    body {
+      padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      max-width: 28rem;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0 0 1rem;
+      letter-spacing: 0.02em;
+    }
+    .phase-pill {
+      display: inline-block;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      border: 1px solid #333a44;
+      padding: 0.25rem 0.5rem;
+      border-radius: 999px;
+      margin-bottom: 1rem;
+    }
+    .panel {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      min-height: var(--tap);
+      padding: 0 0.75rem;
+      border-radius: var(--radius);
+      border: 1px solid #333a44;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 1rem;
+      margin-bottom: 1rem;
+    }
+    input:focus, select:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 0;
+    }
+    button.primary {
+      width: 100%;
+      min-height: var(--tap);
+      border: none;
+      border-radius: var(--radius);
+      background: var(--accent);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.primary:active { background: var(--accent-pressed); }
+    button.primary:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.ghost {
+      width: 100%;
+      min-height: var(--tap);
+      margin-top: 0.5rem;
+      border: 1px solid #333a44;
+      border-radius: var(--radius);
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    .list { list-style: none; padding: 0; margin: 0; }
+    .list li {
+      padding: 0.65rem 0;
+      border-bottom: 1px solid #2a313c;
+      font-size: 0.95rem;
+    }
+    .list li:last-child { border-bottom: none; }
+    .muted { color: var(--muted); font-size: 0.9rem; line-height: 1.45; }
+    .error {
+      color: var(--danger);
+      font-size: 0.875rem;
+      margin-top: 0.75rem;
+    }
+    .vote-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
+      gap: 0.5rem;
+    }
+    .vote-grid button {
+      min-height: var(--tap);
+      border-radius: var(--radius);
+      border: 1px solid #333a44;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 1.1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .vote-grid button:active { background: #252b35; }
+    .score-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid #2a313c;
+    }
+    .score-row:last-child { border-bottom: none; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1>Dixit companion</h1>
+  <div id="phase-pill" class="phase-pill hidden"></div>
+  <main id="main"></main>
+  <p id="error" class="error hidden" role="alert"></p>
+  <script src="/app.js" defer></script>
+</body>
+</html>
