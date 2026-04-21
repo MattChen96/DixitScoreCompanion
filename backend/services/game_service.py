@@ -249,6 +249,64 @@ def submit_vote(game_id: str, player_id: str, card_number: int) -> Game:
 
 
 # ---------------------------------------------------------------------------
+# Available actions (sent to clients on every broadcast)
+# ---------------------------------------------------------------------------
+
+
+def available_actions(game: Game) -> list[str]:
+    """Return the game-level actions currently available.
+
+    This is broadcast inside every ``game_wire`` payload so the frontend
+    never needs to replicate phase-transition conditions, active-player
+    counts, or ruleset constants. The list is game-level (not per-player);
+    the frontend layers identity checks (is the current player the host?)
+    on top where needed.
+
+    Action names map 1-to-1 to API call names:
+    * ``"start_game"``      — LOBBY, ≥3 players present
+    * ``"select_narrator"`` — SELECT_NARRATOR phase active
+    * ``"submit_card"``     — PLAY_CARDS phase active
+    * ``"submit_vote"``     — VOTE phase active
+    * ``"next_phase"``      — host may advance; all round conditions satisfied
+    """
+    actions: list[str] = []
+    phase = game.phase
+
+    if phase == GamePhase.LOBBY:
+        if len(game.players) >= 3:
+            actions.append("start_game")
+
+    elif phase == GamePhase.SELECT_NARRATOR:
+        actions.append("select_narrator")
+
+    elif phase == GamePhase.PLAY_CARDS:
+        actions.append("submit_card")
+        live = active_players(game)
+        if live and all(p.card_played is not None for p in live):
+            actions.append("next_phase")
+
+    elif phase == GamePhase.VOTE:
+        actions.append("submit_vote")
+        live = active_players(game)
+        if live and all(
+            p.vote is not None for p in live if p.id != game.narrator_id
+        ):
+            actions.append("next_phase")
+
+    elif phase in (
+        GamePhase.REVEAL_VOTES,
+        GamePhase.REVEAL_NARRATOR,
+        GamePhase.SCORE_BASE,
+        GamePhase.SCORE_BONUS,
+        GamePhase.NEXT_ROUND,
+        GamePhase.LEADERBOARD,
+    ):
+        actions.append("next_phase")
+
+    return actions
+
+
+# ---------------------------------------------------------------------------
 # Reconnect / liveness
 # ---------------------------------------------------------------------------
 

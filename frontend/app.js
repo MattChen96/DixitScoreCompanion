@@ -4,8 +4,6 @@
   var STORAGE_GAME = "dixit_game_id";
   var STORAGE_PLAYER = "dixit_player_id";
   var STORAGE_TOKEN = "dixit_recovery_token";
-  var MIN_CARD = 1;
-  var MAX_CARD = 84;
 
   var WS_CONNECTING = 0;
   var WS_OPEN = 1;
@@ -15,16 +13,6 @@
   // How often the client heartbeat fires. Must stay comfortably below
   // HEARTBEAT_TIMEOUT_S (45s) on the server.
   var PING_INTERVAL_MS = 15000;
-
-  var HOST_ADVANCE_PHASES = {
-    PLAY_CARDS: true,
-    VOTE: true,
-    REVEAL_VOTES: true,
-    REVEAL_NARRATOR: true,
-    SCORE_BASE: true,
-    SCORE_BONUS: true,
-    NEXT_ROUND: true,
-  };
 
   var state = {
     game: null,
@@ -163,11 +151,17 @@
     });
   }
 
-  function activePlayers() {
-    if (!state.game) return [];
-    return state.game.players.filter(function (p) {
-      return p.connected !== false;
-    });
+  // Return the available_actions array sent by the backend.
+  // Never empty: the backend always sends at least [] so the frontend
+  // never needs to infer which actions are legal.
+  function actions() {
+    return (state.game && state.game.available_actions) || [];
+  }
+
+  // Card bounds from the backend; fallback only for the instant before
+  // the first game_state arrives.
+  function cardRange() {
+    return (state.game && state.game.card_range) || { min: 1, max: 84 };
   }
 
   function startPings() {
@@ -352,8 +346,7 @@
 
   function renderLobby() {
     if (isHost()) {
-      var canStart =
-        phaseIs("LOBBY") && state.game.players.length >= 3;
+      var canStart = actions().indexOf("start_game") !== -1;
       $("main").innerHTML =
         '<div class="panel"><p class="muted">You are the host. When everyone has joined, start the game.</p>' +
         '<ul class="list" id="plist"></ul>' +
@@ -363,7 +356,7 @@
         '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
       renderPlayerList($("plist"));
       $("btn-start").onclick = function () {
-        if (!phaseIs("LOBBY") || state.game.players.length < 3) return;
+        if (actions().indexOf("start_game") === -1) return;
         showError("");
         api("/start_game", { game_id: state.gameId, player_id: state.playerId })
           .then(function (data) {
@@ -385,7 +378,7 @@
 
   function renderSelectNarrator() {
     if (isHost()) {
-      var canPick = phaseIs("SELECT_NARRATOR");
+      var canPick = actions().indexOf("select_narrator") !== -1;
       var opts = state.game.players
         .map(function (p) {
           return (
@@ -408,7 +401,7 @@
         ">Choose storyteller</button>" +
         '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
       $("btn-narr").onclick = function () {
-        if (!phaseIs("SELECT_NARRATOR")) return;
+        if (actions().indexOf("select_narrator") === -1) return;
         showError("");
         var nid = $("narr").value;
         api("/select_narrator", {
@@ -440,26 +433,25 @@
       return;
     }
     if (p.card_played != null) {
-      // Host needs a way to move PLAY_CARDS -> VOTE once everyone has played.
-      // For non-hosts (or while we still wait) this falls through to the
-      // standard waiting screen via renderHostContinue.
-      var label = allCardsPlayed()
+      var allPlayed = actions().indexOf("next_phase") !== -1;
+      var label = allPlayed
         ? "All cards played. Continue to voting when ready."
         : "Waiting for other players to play a card…";
-      renderHostContinue(label, allCardsPlayed());
+      renderHostContinue(label, allPlayed);
       return;
     }
-    var canPlay = phaseIs("PLAY_CARDS");
+    var range = cardRange();
+    var canPlay = actions().indexOf("submit_card") !== -1;
     $("main").innerHTML =
       '<div class="panel"><label>Your card number (' +
-      MIN_CARD +
+      range.min +
       "–" +
-      MAX_CARD +
+      range.max +
       ')</label>' +
       '<input type="number" id="cardn" min="' +
-      MIN_CARD +
+      range.min +
       '" max="' +
-      MAX_CARD +
+      range.max +
       '" step="1" inputmode="numeric"' +
       (canPlay ? "" : " disabled") +
       " />" +
@@ -468,10 +460,11 @@
       ">Play card</button>" +
       '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
     $("btn-card").onclick = function () {
-      if (!phaseIs("PLAY_CARDS")) return;
+      if (actions().indexOf("submit_card") === -1) return;
       showError("");
+      var r = cardRange();
       var n = parseInt($("cardn").value, 10);
-      if (isNaN(n) || n < MIN_CARD || n > MAX_CARD) {
+      if (isNaN(n) || n < r.min || n > r.max) {
         showError("Enter a valid card number.");
         return;
       }
@@ -503,17 +496,19 @@
     // The narrator never votes; if they're also the host they still need a
     // Continue button to move VOTE -> REVEAL_VOTES once everyone has voted.
     if (state.playerId === state.game.narrator_id) {
-      var nlabel = allVotesIn()
+      var allVoted = actions().indexOf("next_phase") !== -1;
+      var nlabel = allVoted
         ? "All votes are in. Continue to reveal."
         : "You are the storyteller — wait while others vote.";
-      renderHostContinue(nlabel, allVotesIn());
+      renderHostContinue(nlabel, allVoted);
       return;
     }
     if (p.vote != null) {
-      var vlabel = allVotesIn()
+      var allVoted2 = actions().indexOf("next_phase") !== -1;
+      var vlabel = allVoted2
         ? "All votes are in. Continue to reveal."
         : "Waiting for other votes…";
-      renderHostContinue(vlabel, allVotesIn());
+      renderHostContinue(vlabel, allVoted2);
       return;
     }
     var cards = state.game.cards_on_table || [];
@@ -521,7 +516,7 @@
       renderWaiting("No cards on the table yet.");
       return;
     }
-    var canVote = phaseIs("VOTE");
+    var canVote = actions().indexOf("submit_vote") !== -1;
     var btns = cards
       .map(function (c) {
         return (
@@ -542,7 +537,7 @@
       '</div><button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
     document.querySelectorAll(".vote-btn").forEach(function (btn) {
       btn.onclick = function () {
-        if (!phaseIs("VOTE")) return;
+        if (actions().indexOf("submit_vote") === -1) return;
         if (btn.disabled) return;
         showError("");
         var card = parseInt(btn.getAttribute("data-card"), 10);
@@ -566,33 +561,10 @@
     };
   }
 
-  function allCardsPlayed() {
-    // Only active players gate progress. A player who dropped before playing
-    // does not block the round — the stall is enforced server-side for the
-    // narrator only, via _validate_round_complete.
-    var pool = activePlayers();
-    return !!(
-      state.game &&
-      pool.length > 0 &&
-      pool.every(function (pl) {
-        return pl.card_played != null;
-      })
-    );
-  }
-
-  function allVotesIn() {
-    var pool = activePlayers();
-    return !!(
-      state.game &&
-      pool.length > 0 &&
-      pool.every(function (pl) {
-        return pl.id === state.game.narrator_id || pl.vote != null;
-      })
-    );
-  }
-
   function renderHostContinue(label, canAdvanceOverride) {
-    var phaseAllowed = isHost() && state.game && HOST_ADVANCE_PHASES[state.game.phase];
+    // The backend tells us whether next_phase is available; the frontend
+    // only adds the identity check (is this player the host?).
+    var phaseAllowed = isHost() && actions().indexOf("next_phase") !== -1;
     var canAdvance =
       phaseAllowed &&
       (typeof canAdvanceOverride === "boolean" ? canAdvanceOverride : true);
@@ -605,7 +577,7 @@
         ">Continue</button>" +
         '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
       $("btn-next").onclick = function () {
-        if (!isHost() || !state.game || !HOST_ADVANCE_PHASES[state.game.phase]) return;
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
         showError("");
         api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
           .then(function (data) {
@@ -642,7 +614,7 @@
         );
       })
       .join("");
-    var canNext = isHost() && phaseIs("LEADERBOARD");
+    var canNext = isHost() && actions().indexOf("next_phase") !== -1;
     var hostBtn = isHost()
       ? '<button type="button" class="primary" id="btn-next"' +
         (canNext ? "" : " disabled") +
@@ -656,7 +628,7 @@
     var next = $("btn-next");
     if (next) {
       next.onclick = function () {
-        if (!phaseIs("LEADERBOARD") || !isHost()) return;
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
         showError("");
         api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
           .then(function (data) {
