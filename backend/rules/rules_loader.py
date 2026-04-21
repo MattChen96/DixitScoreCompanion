@@ -4,14 +4,17 @@ Usage::
 
     from backend.rules.rules_loader import load_rules
 
-    engine = load_rules("dixit")          # standard Dixit rules
-    engine = load_rules("dixit_simple")   # future simplified variant
+    engine = load_rules("standard")    # standard Dixit rules
+    engine = load_rules("high_risk")   # amplified rewards / narrator penalty
+    engine = load_rules("casual")      # low-stakes, beginner-friendly
 
 Adding a new ruleset:
-1. Create a module under ``backend/rules/`` (e.g. ``dixit_simple.py``) that
-   defines a class subclassing ``RulesEngine``.
-2. Register the name → class mapping in ``_REGISTRY`` below.
-3. No other files need to change.
+1. Create a module under ``backend/rules/`` that defines a class subclassing
+   ``RulesEngine`` (typically by inheriting ``StandardDixitRules`` and passing
+   a different ``config_path``).
+2. Add a JSON config to ``backend/rules/config/``.
+3. Register the name → class mapping in ``_registry()`` below.
+4. No other files need to change.
 
 The loader is intentionally kept O(1) via a dict — no dynamic import magic,
 no plugin scanning. This keeps the module dependency graph explicit and
@@ -41,10 +44,14 @@ def _registry() -> dict[str, type[RulesEngine]]:
     Keeping this as a function (rather than a module-level dict) avoids
     importing every concrete implementation at import time.
     """
+    from backend.rules.casual_rules import CasualRules  # noqa: PLC0415
+    from backend.rules.high_risk_rules import HighRiskRules  # noqa: PLC0415
     from backend.rules.standard_dixit import StandardDixitRules  # noqa: PLC0415
 
     return {
-        "dixit": StandardDixitRules,
+        "standard": StandardDixitRules,
+        "high_risk": HighRiskRules,
+        "casual": CasualRules,
     }
 
 

@@ -316,7 +316,7 @@ def scenario_5_narrator_never_played_stall(client: TestClient) -> None:
     # to SCORE_BASE so calculate_scores() runs its round-complete validation,
     # which is the exact code path that next_phase() would hit on the
     # REVEAL_NARRATOR → SCORE_BASE transition.
-    engine = load_rules("dixit")
+    engine = load_rules("standard")
     game.phase = GamePhase.SCORE_BASE
     raised = False
     try:

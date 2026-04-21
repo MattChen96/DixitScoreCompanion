@@ -53,12 +53,19 @@ class _RuleConfig:
 class StandardDixitRules(RulesEngine):
     """Standard Dixit scoring rules.
 
-    Point values are read from ``config/standard.json`` once per
-    instance. Pass an explicit ``config`` to override in tests.
+    Point values are read from a JSON config file once per instance.
+
+    Subclasses override the ruleset by passing a different ``config_path``
+    to ``super().__init__()``. Tests can inject a pre-built ``_RuleConfig``
+    directly to skip file I/O.
     """
 
-    def __init__(self, config: _RuleConfig | None = None) -> None:
-        self._cfg = config if config is not None else _RuleConfig.load()
+    def __init__(
+        self,
+        config_path: Path = _CONFIG_PATH,
+        config: _RuleConfig | None = None,
+    ) -> None:
+        self._cfg = config if config is not None else _RuleConfig.load(config_path)
 
     # ------------------------------------------------------------------
     # RulesEngine interface

@@ -20,7 +20,7 @@ from backend.services.state_machine import advance_phase_by_host, transition_pha
 # All scoring lives in the rules engine now. We hold a single instance for
 # the whole process because StandardDixitRules is stateless; per-game rule
 # selection would be a future extension.
-_rules_engine = load_rules("dixit")
+_rules_engine = load_rules("standard")
 
 # WebSocket "game_error" payload used when two players play the same card.
 DUPLICATE_CARDS_ERROR = "duplicate_cards"
