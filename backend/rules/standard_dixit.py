@@ -1,8 +1,8 @@
 """Standard Dixit ruleset.
 
-Owns all scoring logic for the classic Dixit rules. Other modules MUST
-NOT reimplement any part of this logic — they call it exclusively via
-the ``RulesEngine`` interface (see :mod:`backend.rules.base_rules`).
+Owns all scoring logic for the classic Dixit rules. Point values are
+loaded from ``backend/rules/config/standard.json`` at import time so
+they can be adjusted without touching Python code.
 
 Entry point is :meth:`StandardDixitRules.calculate_scores`, which
 dispatches by the current phase:
@@ -16,6 +16,9 @@ Both are guarded by idempotency flags on ``Game`` and run only after
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from backend.models.game_phase import GamePhase
@@ -24,9 +27,38 @@ from backend.rules.base_rules import RulesEngine
 if TYPE_CHECKING:
     from backend.models.game import Game, Player
 
+_CONFIG_PATH = Path(__file__).parent / "config" / "standard.json"
+
+
+@dataclass(frozen=True)
+class _RuleConfig:
+    correct_guess_points: int
+    narrator_points: int
+    fail_all_points: int
+    fail_others_points: int
+    vote_bonus: int
+
+    @classmethod
+    def load(cls, path: Path = _CONFIG_PATH) -> "_RuleConfig":
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls(
+            correct_guess_points=int(data["correct_guess_points"]),
+            narrator_points=int(data["narrator_points"]),
+            fail_all_points=int(data["fail_all_points"]),
+            fail_others_points=int(data["fail_others_points"]),
+            vote_bonus=int(data["vote_bonus"]),
+        )
+
 
 class StandardDixitRules(RulesEngine):
-    """Standard Dixit scoring rules."""
+    """Standard Dixit scoring rules.
+
+    Point values are read from ``config/standard.json`` once per
+    instance. Pass an explicit ``config`` to override in tests.
+    """
+
+    def __init__(self, config: _RuleConfig | None = None) -> None:
+        self._cfg = config if config is not None else _RuleConfig.load()
 
     # ------------------------------------------------------------------
     # RulesEngine interface
@@ -144,13 +176,16 @@ class StandardDixitRules(RulesEngine):
         n_correct = len(correct)
 
         if n_correct == 0 or n_correct == n_voters:
+            # All or none guessed the narrator's card: narrator scores
+            # fail_all_points, all others score fail_others_points.
+            narrator.score += self._cfg.fail_all_points
             for p in self._players_sorted(game):
                 if p.id != game.narrator_id:
-                    p.score += 2
+                    p.score += self._cfg.fail_others_points
         else:
-            narrator.score += 3
+            narrator.score += self._cfg.narrator_points
             for p in sorted(correct, key=lambda x: x.id):
-                p.score += 3
+                p.score += self._cfg.correct_guess_points
 
         game.score_base_applied = True
 
@@ -171,6 +206,6 @@ class StandardDixitRules(RulesEngine):
 
         for owner in self._players_sorted(game):
             votes_on_card = sum(1 for v in voters if v.vote == owner.card_played)
-            owner.score += votes_on_card
+            owner.score += votes_on_card * self._cfg.vote_bonus
 
         game.score_bonus_applied = True
