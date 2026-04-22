@@ -744,6 +744,80 @@
     };
   }
 
+  function renderRevealVotes() {
+    var game = state.game;
+    var narratorId = game.narrator_id;
+
+    var rows = game.players
+      .map(function (p) {
+        var isMe = p.id === state.playerId;
+        var isNarrator = p.id === narratorId;
+
+        var nameParts = escapeHtml(p.nickname);
+        if (isNarrator) nameParts += ' <span class="muted">(storyteller)</span>';
+        if (isMe) nameParts += ' <span class="muted">(you)</span>';
+
+        var pills;
+        if (isNarrator) {
+          var card = p.card_played != null ? String(p.card_played) : "—";
+          pills = '<span class="reveal-pill narrator-card">' + escapeHtml(card) + "</span>";
+        } else {
+          var votes = p.votes || [];
+          if (votes.length === 0) {
+            pills = '<span class="muted">—</span>';
+          } else {
+            pills = votes
+              .map(function (c) {
+                return '<span class="reveal-pill">' + escapeHtml(String(c)) + "</span>";
+              })
+              .join("");
+          }
+        }
+
+        return (
+          '<div class="reveal-row"><span>' +
+          nameParts +
+          '</span><span class="reveal-pills">' +
+          pills +
+          "</span></div>"
+        );
+      })
+      .join("");
+
+    var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
+    var hostBtn = isHost()
+      ? '<button type="button" class="primary" id="btn-next"' +
+        (canAdvance ? "" : " disabled") +
+        ">Continue</button>"
+      : "";
+
+    $("main").innerHTML =
+      '<div class="panel"><p class="muted">Who voted what</p>' +
+      rows +
+      hostBtn +
+      '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function () {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function (data) {
+            state.game = data.game;
+            render();
+          })
+          .catch(function (e) {
+            showError(e.message);
+          });
+      };
+    }
+    $("btn-leave").onclick = function () {
+      clearSession();
+      render();
+    };
+  }
+
   function renderHostContinue(label, canAdvanceOverride) {
     // The backend tells us whether next_phase is available; the frontend
     // only adds the identity check (is this player the host?).
@@ -877,8 +951,9 @@
       renderPlayCards();
     } else if (ph === "VOTE") {
       renderVote();
+    } else if (ph === "REVEAL_VOTES") {
+      renderRevealVotes();
     } else if (
-      ph === "REVEAL_VOTES" ||
       ph === "REVEAL_NARRATOR" ||
       ph === "SCORE_BASE" ||
       ph === "SCORE_BONUS" ||

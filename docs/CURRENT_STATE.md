@@ -149,9 +149,6 @@ Covered in detail in `APP_STATE.md`. In brief:
   been implemented — see §2.)*
 * **No progressive scoring display.** `SCORE_BASE` and `SCORE_BONUS`
   both just render the leaderboard; there is no per-round `+N` breakdown.
-* **No per-player vote history** visible in UI. During `REVEAL_VOTES`
-  the server exposes `cards_on_table` and each player's `votes`, but the
-  current frontend does not render "who voted what".
 * **Host disconnect stalls the game.** No host migration / handoff.
 
 ### 5.2 UX gaps
