@@ -59,8 +59,9 @@ require explicit host input.
   up to the cap.
 * **Vote locking** (`POST /lock_votes`, host only): sets
   `Game.votes_locked = true`. Further `submit_vote` / `update_vote` calls
-  are then rejected. Once locked, the host can advance
-  `VOTE → REVEAL_VOTES` via `POST /next_phase`.
+  are then rejected. Locking is **optional** — the host can advance
+  `VOTE → REVEAL_VOTES` via `POST /next_phase` at any time, with or
+  without locking first.
 * A player **cannot vote their own card** (server-enforced; own-card
   buttons are disabled and labelled `(yours)` in the frontend).
 * A player **cannot vote the same card twice** even when 2 votes are

@@ -361,14 +361,11 @@ def available_actions(game: Game) -> list[str]:
 
     elif phase == GamePhase.VOTE:
         if not game.votes_locked:
-            # Players may submit or update their votes while unlocked.
             actions.append("submit_vote")
             actions.append("update_vote")
-            # Host can lock votes at any point while they are unlocked.
             actions.append("lock_votes")
-        else:
-            # Once locked, the host may advance to REVEAL_VOTES.
-            actions.append("next_phase")
+        # Host can always advance from VOTE; locking is optional.
+        actions.append("next_phase")
 
     elif phase in (
         GamePhase.REVEAL_VOTES,

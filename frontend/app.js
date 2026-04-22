@@ -623,13 +623,17 @@
   function renderVoteWaiting(votesLocked) {
     var isNarrator = state.playerId === state.game.narrator_id;
     var canLock = !votesLocked && actions().indexOf("lock_votes") !== -1;
-    var canAdvance = votesLocked && actions().indexOf("next_phase") !== -1;
+    var canAdvance = actions().indexOf("next_phase") !== -1;
 
     var label;
-    if (isNarrator) {
-      label = canLock
-        ? "All votes are in — you can lock now."
-        : "You are the storyteller — wait while others vote.";
+    if (isHost()) {
+      label = votesLocked
+        ? "Votes locked — continue when ready."
+        : "Continue when ready, or lock votes first.";
+    } else if (isNarrator) {
+      label = votesLocked
+        ? "Votes locked. Waiting for the host to continue."
+        : "You are the storyteller — waiting for the host.";
     } else if (votesLocked) {
       label = "Votes locked. Waiting for the host to continue.";
     } else {
