@@ -517,15 +517,19 @@
       return;
     }
     var canVote = actions().indexOf("submit_vote") !== -1;
+    var myCard = p.card_played;
     var btns = cards
       .map(function (c) {
+        var isOwnCard = c === myCard;
+        var cls = "vote-btn" + (isOwnCard ? " own-card" : "");
+        var isDisabled = !canVote || isOwnCard;
+        var label = isOwnCard ? c + "\u00a0(yours)" : String(c);
         return (
-          '<button type="button" class="vote-btn" data-card="' +
-          c +
-          '"' +
-          (canVote ? "" : " disabled") +
+          '<button type="button" class="' + cls + '" data-card="' +
+          c + '"' +
+          (isDisabled ? " disabled" : "") +
           ">" +
-          c +
+          label +
           "</button>"
         );
       })

@@ -243,6 +243,8 @@ def submit_vote(game_id: str, player_id: str, card_number: int) -> Game:
             "Vote must be for a card that is on the table "
             "(one of the submitted card numbers)."
         )
+    if card_number == player.card_played:
+        raise ValueError("You cannot vote for your own card")
 
     player.vote = card_number
     return game
