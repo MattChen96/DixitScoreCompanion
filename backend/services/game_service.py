@@ -61,7 +61,7 @@ def _reset_play_cards_round(game: Game) -> None:
     """Invalidate a PLAY_CARDS round: clear submissions, keep phase = PLAY_CARDS."""
     for p in game.players:
         p.card_played = None
-        p.vote = None
+        p.votes.clear()
     game.cards_on_table.clear()
 
 
@@ -75,10 +75,11 @@ def _reset_round_after_next(game: Game) -> None:
     """
     for p in game.players:
         p.card_played = None
-        p.vote = None
+        p.votes.clear()
     game.cards_on_table.clear()
     game.score_base_applied = False
     game.score_bonus_applied = False
+    game.votes_locked = False
 
 
 def _has_duplicate_cards(game: Game) -> bool:
@@ -116,14 +117,16 @@ def _require_card_number(card_number: int) -> None:
         )
 
 
-def create_game(ruleset: str = "standard") -> Game:
+def create_game(ruleset: str = "standard", votes_per_player: int = 1) -> Game:
     # Fail fast on an unknown ruleset name so we never create a game
     # that would later fail at start or scoring time. The resulting
     # engine is cached for subsequent _engine_for(game) calls.
     _engine_cache.setdefault(ruleset, load_rules(ruleset))
+    if votes_per_player not in (1, 2):
+        raise ValueError("votes_per_player must be 1 or 2")
 
     game_id = uuid.uuid4().hex[:8].upper()
-    game = Game(id=game_id, ruleset=ruleset)
+    game = Game(id=game_id, ruleset=ruleset, votes_per_player=votes_per_player)
     store.set_game(game_id, game)
     return game
 
@@ -226,18 +229,29 @@ def submit_card(game_id: str, player_id: str, card_number: int) -> Game:
 
 
 def submit_vote(game_id: str, player_id: str, card_number: int) -> Game:
+    """Add a single vote to the player's vote list.
+
+    Can be called up to ``Game.votes_per_player`` times per player per round.
+    Votes are rejected once the host has locked them (``Game.votes_locked``).
+    """
     _require_card_number(card_number)
     game = _require_game(game_id)
     _require_phase(game, GamePhase.VOTE, "Voting")
 
+    if game.votes_locked:
+        raise ValueError("Votes are locked; no further votes can be submitted")
     if not game.cards_on_table:
         raise ValueError("There are no cards on the table to vote for yet")
 
     player = _require_player(game, player_id)
     if player.id == game.narrator_id:
         raise ValueError("Narrator cannot vote")
-    if player.vote is not None:
-        raise ValueError("This player has already voted this round")
+    if len(player.votes) >= game.votes_per_player:
+        raise ValueError(
+            f"This player has already cast {game.votes_per_player} vote(s) this round"
+        )
+    if card_number in player.votes:
+        raise ValueError("You cannot vote for the same card twice")
     if card_number not in game.cards_on_table:
         raise ValueError(
             "Vote must be for a card that is on the table "
@@ -246,7 +260,63 @@ def submit_vote(game_id: str, player_id: str, card_number: int) -> Game:
     if card_number == player.card_played:
         raise ValueError("You cannot vote for your own card")
 
-    player.vote = card_number
+    player.votes.append(card_number)
+    return game
+
+
+def update_vote(game_id: str, player_id: str, card_numbers: list[int]) -> Game:
+    """Replace a player's vote list entirely (for editing or multi-vote confirmation).
+
+    Accepts 1 or 2 card numbers (up to ``Game.votes_per_player``). Replaces any
+    previously submitted votes atomically. Rejected once votes are locked.
+    """
+    for card_number in card_numbers:
+        _require_card_number(card_number)
+    game = _require_game(game_id)
+    _require_phase(game, GamePhase.VOTE, "Updating votes")
+
+    if game.votes_locked:
+        raise ValueError("Votes are locked; votes cannot be changed")
+    if not game.cards_on_table:
+        raise ValueError("There are no cards on the table to vote for yet")
+    if not card_numbers:
+        raise ValueError("At least one vote is required")
+    if len(card_numbers) > game.votes_per_player:
+        raise ValueError(
+            f"Cannot cast more than {game.votes_per_player} vote(s) per player"
+        )
+    if len(card_numbers) != len(set(card_numbers)):
+        raise ValueError("You cannot vote for the same card twice")
+
+    player = _require_player(game, player_id)
+    if player.id == game.narrator_id:
+        raise ValueError("Narrator cannot vote")
+    for card_number in card_numbers:
+        if card_number not in game.cards_on_table:
+            raise ValueError(
+                "Vote must be for a card that is on the table "
+                "(one of the submitted card numbers)."
+            )
+        if card_number == player.card_played:
+            raise ValueError("You cannot vote for your own card")
+
+    player.votes = list(card_numbers)
+    return game
+
+
+def lock_votes(game_id: str, requester_id: str) -> Game:
+    """Lock all votes so no further submissions or edits are possible (host only).
+
+    Once locked, the host may advance from VOTE to REVEAL_VOTES.
+    The lock is cleared automatically on round reset.
+    """
+    game = _require_game(game_id)
+    _require_phase(game, GamePhase.VOTE, "Locking votes")
+    if requester_id != game.host_id:
+        raise ValueError("Only the host can lock votes")
+    if game.votes_locked:
+        raise ValueError("Votes are already locked")
+    game.votes_locked = True
     return game
 
 
@@ -288,11 +358,14 @@ def available_actions(game: Game) -> list[str]:
             actions.append("next_phase")
 
     elif phase == GamePhase.VOTE:
-        actions.append("submit_vote")
-        live = active_players(game)
-        if live and all(
-            p.vote is not None for p in live if p.id != game.narrator_id
-        ):
+        if not game.votes_locked:
+            # Players may submit or update their votes while unlocked.
+            actions.append("submit_vote")
+            actions.append("update_vote")
+            # Host can lock votes at any point while they are unlocked.
+            actions.append("lock_votes")
+        else:
+            # Once locked, the host may advance to REVEAL_VOTES.
             actions.append("next_phase")
 
     elif phase in (

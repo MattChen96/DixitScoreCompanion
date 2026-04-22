@@ -142,6 +142,31 @@
       color: var(--muted);
       font-size: 0.75rem;
     }
+    .vote-grid button.selected {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .vote-grid button.selected:active { background: var(--accent-pressed); }
+    .vote-preview {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      margin: 1.25rem 0;
+    }
+    .vote-preview-card {
+      flex: 1;
+      max-width: 10rem;
+      min-height: 7rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: var(--radius);
+      border: 2px solid var(--accent);
+      background: var(--bg);
+      font-size: 2.5rem;
+      font-weight: 700;
+    }
     .score-row {
       display: flex;
       justify-content: space-between;

@@ -97,6 +97,15 @@ Entered when a player taps a card in the vote grid.
   `true` while in this state, the preview becomes read-only until the
   host advances.
 
+> **Implementation note (current):** `renderVotePreview` is implemented as
+> a client-side UI state driven by the module-level `pendingVote` variable
+> in `frontend/app.js`. "Confirm" currently calls `POST /submit_vote` only
+> (single-vote backend); `POST /update_vote` and re-entry from the
+> already-voted waiting screen require the `update_vote` endpoint and
+> `votes_locked` flag, which are not yet implemented. The render function
+> accepts `pendingVote` as a number or array and normalises to an array
+> internally, so displaying 1 or 2 cards requires no further UI changes.
+
 ### 4.2 Waiting panels
 
 Several server phases render the same UI shell in the current

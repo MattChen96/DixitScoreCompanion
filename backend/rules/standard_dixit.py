@@ -154,7 +154,7 @@ class StandardDixitRules(RulesEngine):
                 )
 
         for p in self._active_sorted(game):
-            if p.id != game.narrator_id and p.vote is None:
+            if p.id != game.narrator_id and not p.votes:
                 raise ValueError(
                     f"Cannot score: every active non-narrator must have voted; "
                     f"missing vote for player {p.id!r}."
@@ -178,7 +178,7 @@ class StandardDixitRules(RulesEngine):
         assert narrator_card is not None
 
         voters = [p for p in self._players_sorted(game) if p.id != game.narrator_id]
-        correct = [p for p in voters if p.vote == narrator_card]
+        correct = [p for p in voters if narrator_card in p.votes]
         n_voters = len(voters)
         n_correct = len(correct)
 
@@ -212,7 +212,11 @@ class StandardDixitRules(RulesEngine):
         voters = [p for p in self._players_sorted(game) if p.id != game.narrator_id]
 
         for owner in self._players_sorted(game):
-            votes_on_card = sum(1 for v in voters if v.vote == owner.card_played)
+            if owner.card_played is None:
+                continue
+            votes_on_card = sum(
+                1 for v in voters if owner.card_played in v.votes
+            )
             owner.score += votes_on_card * self._cfg.vote_bonus
 
         game.score_bonus_applied = True

@@ -24,16 +24,14 @@ context.
 | `nickname`         | `str`            | current  | 1–40 chars. Trimmed at the request boundary. Display name only — not used for identity. |
 | `score`            | `int`            | current  | Cumulative across rounds. Never reset during a game; only increments (or decrements, under `high_risk`) during `SCORE_BASE` / `SCORE_BONUS`. |
 | `card_played`      | `int \| null`    | current  | Card number this player played this round. Must be unique across all players during `PLAY_CARDS`; cleared on round reset. |
-| `vote`             | `int \| null`    | current  | Card number the player voted this round. `null` for the narrator. Cleared on round reset. **Superseded by `votes` in the target state.** |
-| `votes`            | `list[int]`      | target   | Card numbers the player voted this round. Length 0, 1, or 2 (see `Game.votes_per_player`). Duplicates are rejected; own card is rejected. `null`/empty for the narrator. Cleared on round reset. |
+| `votes`            | `list[int]`      | current  | Card numbers the player voted this round. Length 0, 1, or 2 (capped by `Game.votes_per_player`). Duplicates are rejected; own card is rejected. Empty for the narrator. Cleared on round reset. |
 | `connected`        | `bool`           | current  | Liveness flag. `true` on join and on any inbound event; flipped to `false` by the heartbeat task after ~45 s of silence. Players are **never removed**. |
 | `last_seen`        | `float`          | current  | Unix timestamp (seconds). Updated by `ping`, `reconnect`, `submit_card`, `submit_vote`. |
 | `recovery_token`   | `str`            | current  | Server-generated (uuid4 hex). **Returned only by `POST /join_game`**; stripped by `game_wire` from every other response and every WebSocket broadcast. Stored by the client in `localStorage` and replayed on the WS `reconnect` event. |
 
 Minimum Player shape required for any future state to remain valid:
 
-* `id`, `nickname`, `connected`, `score`, and the vote representation
-  (`vote` today, `votes` in target).
+* `id`, `nickname`, `connected`, `score`, `votes`.
 
 ---
 
@@ -50,8 +48,8 @@ Minimum Player shape required for any future state to remain valid:
 | `ruleset`                | `str`             | current  | Scoring ruleset (`"standard"` \| `"high_risk"` \| `"casual"`). Default `"standard"`. Immutable after game creation. |
 | `score_base_applied`     | `bool`            | current  | Idempotency guard: has base scoring been applied this round? |
 | `score_bonus_applied`    | `bool`            | current  | Idempotency guard: has bonus scoring been applied this round? |
-| `votes_locked`           | `bool`            | target   | `false` by default. When `true`, further `submit_vote` / `update_vote` calls are rejected. Set by `POST /lock_votes` (host only). Cleared on round reset. |
-| `votes_per_player`       | `int`             | target   | Max votes a non-narrator player may cast (1 or 2). Derived from player count and/or ruleset; exposed so the frontend can render the vote grid correctly. |
+| `votes_locked`           | `bool`            | current  | `false` by default. When `true`, further `submit_vote` / `update_vote` calls are rejected. Set by `POST /lock_votes` (host only). Cleared on round reset. |
+| `votes_per_player`       | `int`             | current  | Max votes a non-narrator player may cast (1 or 2). Set at game creation (`POST /create_game {votes_per_player}`). Default `1`. Exposed in every broadcast so the frontend can render the vote grid correctly. |
 | `scoring_step`           | `"base" \| "bonus" \| null` | target | Tells the client which progressive-scoring panel to render. Set to `"base"` when the server applies base scores, `"bonus"` on bonus, and cleared on round reset. |
 
 ---
@@ -113,9 +111,10 @@ def delete_game(game_id: str) -> None: ...
   `host_id`.
 * **Round reset** (`NEXT_ROUND → SELECT_NARRATOR`) clears:
   * every `Player.card_played`
-  * every `Player.vote` (current) / `Player.votes` (target)
+  * every `Player.votes`
   * `Game.cards_on_table`
   * `Game.score_base_applied`, `Game.score_bonus_applied`
-  * `Game.votes_locked`, `Game.scoring_step` (target)
+  * `Game.votes_locked`
+  * `Game.scoring_step` (target)
 * **Preserved across rounds**: `Player.score`, `Game.players`,
   `Game.host_id`, `Game.ruleset`.

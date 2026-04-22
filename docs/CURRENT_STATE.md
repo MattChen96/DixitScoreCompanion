@@ -50,22 +50,26 @@ require explicit host input.
 
 ## 2. Voting system
 
-* **Exactly 1 vote per non-narrator player** (`Player.vote: int | None`).
+* **1 or 2 votes per non-narrator player** (`Player.votes: list[int]`).
+  The cap is `Game.votes_per_player` (1 or 2, set at game creation, default 1).
   The narrator cannot vote.
-* **Votes are NOT editable.** Once a player submits a vote, the server
-  rejects further `submit_vote` calls with
-  `"This player has already voted this round"` (`game_service.submit_vote`
-  line 239–240).
-* A player **cannot vote their own card**: the server rejects the
-  submission, and the frontend renders the player's own card as a
-  disabled button labelled `(yours)` (`frontend/app.js:renderVote`,
-  CSS `.vote-grid button.own-card`).
+* **Votes are editable** until the host locks them. While
+  `Game.votes_locked == false`, a player may call `POST /update_vote`
+  to replace their vote list, or `POST /submit_vote` to add a single vote
+  up to the cap.
+* **Vote locking** (`POST /lock_votes`, host only): sets
+  `Game.votes_locked = true`. Further `submit_vote` / `update_vote` calls
+  are then rejected. Once locked, the host can advance
+  `VOTE → REVEAL_VOTES` via `POST /next_phase`.
+* A player **cannot vote their own card** (server-enforced; own-card
+  buttons are disabled and labelled `(yours)` in the frontend).
+* A player **cannot vote the same card twice** even when 2 votes are
+  allowed.
 * The vote target must be a card number currently `on the table`.
-* The host moves from VOTE to REVEAL_VOTES via `POST /next_phase`. The
-  transition is gated on **every active (connected) non-narrator having
-  voted** — disconnected players do not block the transition.
-* There is no "vote preview" step; clicking a card submits immediately.
-* There is no "vote lock" concept on the server side.
+* **Vote preview (UI state)**: the frontend intercepts card selection and
+  shows a VOTE_PREVIEW confirmation screen before calling `update_vote`.
+  Clicking "Change" returns to the grid; clicking "Confirm" submits.
+* **Vote lock is cleared** on round reset (`NEXT_ROUND → SELECT_NARRATOR`).
 
 ---
 
@@ -124,7 +128,7 @@ Covered in detail in `APP_STATE.md`. In brief:
   `game_error`/`duplicate_cards` event.
 * **Reconnect**: a `recovery_token` is returned only by `/join_game`,
   stored in `localStorage`, and replayed on every WebSocket open. A
-  successful reconnect restores score, `card_played`, and `vote`
+  successful reconnect restores score, `card_played`, and `votes`
   byte-for-byte.
 * **Heartbeat**: client pings every ~15 s. A background task flips
   silent players (>45 s) to `connected = false` and broadcasts
@@ -140,20 +144,13 @@ Covered in detail in `APP_STATE.md`. In brief:
 
 ### 5.1 Gameplay limitations
 
-* **Single vote only** per player — Dixit natively supports one vote,
-  but some house-rule variants with 6–7 players allow 2 votes; this is
-  not supported today.
-* **Votes are immutable** once submitted. A misclick forces the player
-  to live with the wrong vote.
-* **No vote preview / confirmation step**. Clicks are final.
-* **No host-controlled vote locking.** The host only advances phases;
-  there is no intermediate "votes are locked" state between submission
-  and reveal.
+* **No progressive scoring display.** *(Note: items previously listed here for
+  single-vote-only, immutable votes, no vote preview, and no vote locking have
+  been implemented — see §2.)*
 * **No progressive scoring display.** `SCORE_BASE` and `SCORE_BONUS`
-  both just render the leaderboard; there is no per-round
-  `+N` breakdown.
+  both just render the leaderboard; there is no per-round `+N` breakdown.
 * **No per-player vote history** visible in UI. During `REVEAL_VOTES`
-  the server exposes `cards_on_table` and each player's `vote`, but the
+  the server exposes `cards_on_table` and each player's `votes`, but the
   current frontend does not render "who voted what".
 * **Host disconnect stalls the game.** No host migration / handoff.
 

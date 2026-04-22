@@ -26,6 +26,18 @@
     pingTimer: null,
   };
 
+  // Transient UI-only vote state — never serialised or sent over the wire.
+  // pendingVote: null = idle; number[] = cards being staged in the grid.
+  // previewReady: true when the player has confirmed their grid selection and
+  //   we should render VOTE_PREVIEW rather than the grid.
+  var pendingVote = null;
+  var previewReady = false;
+
+  function resetPendingVote() {
+    pendingVote = null;
+    previewReady = false;
+  }
+
   function $(id) {
     return document.getElementById(id);
   }
@@ -493,74 +505,241 @@
       renderWaiting("Loading…");
       return;
     }
-    // The narrator never votes; if they're also the host they still need a
-    // Continue button to move VOTE -> REVEAL_VOTES once everyone has voted.
+
+    var votesPerPlayer = state.game.votes_per_player || 1;
+    var myVotes = p.votes || [];
+    var votesLocked = !!state.game.votes_locked;
+
+    // The narrator never votes; show waiting / host-advance panel.
     if (state.playerId === state.game.narrator_id) {
-      var allVoted = actions().indexOf("next_phase") !== -1;
-      var nlabel = allVoted
-        ? "All votes are in. Continue to reveal."
-        : "You are the storyteller — wait while others vote.";
-      renderHostContinue(nlabel, allVoted);
+      renderVoteWaiting(votesLocked);
       return;
     }
-    if (p.vote != null) {
-      var allVoted2 = actions().indexOf("next_phase") !== -1;
-      var vlabel = allVoted2
-        ? "All votes are in. Continue to reveal."
-        : "Waiting for other votes…";
-      renderHostContinue(vlabel, allVoted2);
+
+    // Player already has at least one confirmed vote and is not editing.
+    if (myVotes.length > 0 && pendingVote === null) {
+      renderVoteWaiting(votesLocked);
       return;
     }
+
+    // VOTE_PREVIEW: selection staged and player confirmed it in the grid.
+    if (pendingVote !== null && previewReady) {
+      renderVotePreview();
+      return;
+    }
+
+    // Vote grid (fresh or mid-selection for multi-vote).
     var cards = state.game.cards_on_table || [];
     if (!cards.length) {
       renderWaiting("No cards on the table yet.");
       return;
     }
-    var canVote = actions().indexOf("submit_vote") !== -1;
+
+    // Initialise selection from existing votes when entering "change" mode.
+    if (pendingVote === null) pendingVote = [];
+
+    var canVote = actions().indexOf("submit_vote") !== -1 ||
+                  actions().indexOf("update_vote") !== -1;
     var myCard = p.card_played;
+    var selected = pendingVote; // array (may be empty)
+
+    var gridInstruction = votesPerPlayer === 1
+      ? "Vote for one card."
+      : "Vote for up to " + votesPerPlayer + " cards" +
+        (selected.length > 0 ? " (" + selected.length + " selected)." : ".");
+
     var btns = cards
       .map(function (c) {
         var isOwnCard = c === myCard;
-        var cls = "vote-btn" + (isOwnCard ? " own-card" : "");
-        var isDisabled = !canVote || isOwnCard;
+        var isSelected = selected.indexOf(c) !== -1;
+        var isDisabled = !canVote || isOwnCard ||
+                         (!isSelected && selected.length >= votesPerPlayer);
+        var cls = "vote-btn" +
+                  (isOwnCard ? " own-card" : "") +
+                  (isSelected ? " selected" : "");
         var label = isOwnCard ? c + "\u00a0(yours)" : String(c);
         return (
-          '<button type="button" class="' + cls + '" data-card="' +
-          c + '"' +
+          '<button type="button" class="' + cls + '" data-card="' + c + '"' +
           (isDisabled ? " disabled" : "") +
-          ">" +
-          label +
-          "</button>"
+          ">" + label + "</button>"
         );
       })
       .join("");
+
+    // "Confirm selection" button — appears for multi-vote once ≥1 card chosen.
+    var confirmBtn = (votesPerPlayer > 1 && selected.length >= 1)
+      ? '<button type="button" class="primary" id="btn-confirm-sel" style="margin-top:1rem">' +
+        "Confirm " + selected.length + " vote" + (selected.length !== 1 ? "s" : "") +
+        "</button>"
+      : "";
+
     $("main").innerHTML =
-      '<div class="panel"><p class="muted">Vote for one card.</p>' +
-      '<div class="vote-grid">' +
-      btns +
-      '</div><button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
+      '<div class="panel"><p class="muted">' + escapeHtml(gridInstruction) + "</p>" +
+      '<div class="vote-grid">' + btns + "</div>" +
+      confirmBtn +
+      '<button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
+
     document.querySelectorAll(".vote-btn").forEach(function (btn) {
       btn.onclick = function () {
-        if (actions().indexOf("submit_vote") === -1) return;
         if (btn.disabled) return;
-        showError("");
         var card = parseInt(btn.getAttribute("data-card"), 10);
-        api("/submit_vote", {
-          game_id: state.gameId,
-          player_id: state.playerId,
-          card_number: card,
-        })
-          .then(function (data) {
-            state.game = data.game;
-            render();
-          })
-          .catch(function (e) {
-            showError(e.message);
-          });
+        var idx = pendingVote.indexOf(card);
+        if (idx !== -1) {
+          // Deselect.
+          pendingVote.splice(idx, 1);
+        } else {
+          pendingVote.push(card);
+        }
+        // For single-vote, immediately advance to VOTE_PREVIEW on selection.
+        if (votesPerPlayer === 1 && pendingVote.length === 1) {
+          previewReady = true;
+        }
+        // For multi-vote, auto-advance when the maximum is reached.
+        if (votesPerPlayer > 1 && pendingVote.length >= votesPerPlayer) {
+          previewReady = true;
+        }
+        render();
       };
     });
+
+    var confirmSel = $("btn-confirm-sel");
+    if (confirmSel) {
+      confirmSel.onclick = function () {
+        if (pendingVote.length >= 1) {
+          previewReady = true;
+          render();
+        }
+      };
+    }
+
     $("btn-leave").onclick = function () {
       clearSession();
+      render();
+    };
+  }
+
+  // Waiting panel shown to players who have already voted (or are the narrator)
+  // during the VOTE phase. Handles host lock/continue buttons inline.
+  function renderVoteWaiting(votesLocked) {
+    var isNarrator = state.playerId === state.game.narrator_id;
+    var canLock = !votesLocked && actions().indexOf("lock_votes") !== -1;
+    var canAdvance = votesLocked && actions().indexOf("next_phase") !== -1;
+
+    var label;
+    if (isNarrator) {
+      label = canLock
+        ? "All votes are in — you can lock now."
+        : "You are the storyteller — wait while others vote.";
+    } else if (votesLocked) {
+      label = "Votes locked. Waiting for the host to continue.";
+    } else {
+      label = "Waiting for other votes…";
+    }
+
+    var html = '<div class="panel"><p class="muted">' + escapeHtml(label) + "</p>";
+
+    // "Change vote" — non-narrator player, votes not yet locked.
+    if (!isNarrator && !votesLocked) {
+      html += '<button type="button" class="ghost" id="btn-change-vote" style="margin-top:0.5rem">Change vote</button>';
+    }
+
+    // Host actions.
+    if (isHost()) {
+      if (canLock) {
+        html += '<button type="button" class="primary" id="btn-lock" style="margin-top:0.75rem">Lock votes</button>';
+      }
+      if (canAdvance) {
+        html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue</button>';
+      }
+    }
+
+    html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+    $("main").innerHTML = html;
+
+    var btnChangeVote = $("btn-change-vote");
+    if (btnChangeVote) {
+      btnChangeVote.onclick = function () {
+        var p = me();
+        // Pre-load existing votes into the selection so the grid shows them.
+        pendingVote = (p && p.votes) ? p.votes.slice() : [];
+        previewReady = false;
+        render();
+      };
+    }
+
+    var btnLock = $("btn-lock");
+    if (btnLock) {
+      btnLock.onclick = function () {
+        showError("");
+        api("/lock_votes", { game_id: state.gameId, player_id: state.playerId })
+          .then(function (data) { state.game = data.game; render(); })
+          .catch(function (e) { showError(e.message); });
+      };
+    }
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function () {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function (data) { state.game = data.game; render(); })
+          .catch(function (e) { showError(e.message); });
+      };
+    }
+
+    $("btn-leave").onclick = function () {
+      clearSession();
+      render();
+    };
+  }
+
+  // Renders the VOTE_PREVIEW UI state: selected card(s) shown large with
+  // Confirm (submits via update_vote) and Change (back to grid) actions.
+  function renderVotePreview() {
+    var selection = pendingVote || [];
+    var canSubmit = !state.game.votes_locked &&
+                    (actions().indexOf("update_vote") !== -1 ||
+                     actions().indexOf("submit_vote") !== -1);
+    var tiles = selection
+      .map(function (c) {
+        return '<div class="vote-preview-card">' + escapeHtml(String(c)) + "</div>";
+      })
+      .join("");
+    var voteWord = selection.length === 1 ? "vote" : "votes";
+    $("main").innerHTML =
+      '<div class="panel">' +
+      '<p class="muted">Confirm your ' + voteWord + '?</p>' +
+      '<div class="vote-preview">' + tiles + "</div>" +
+      '<button type="button" class="primary" id="btn-confirm"' +
+      (canSubmit ? "" : " disabled") +
+      ">Confirm</button>" +
+      '<button type="button" class="ghost" id="btn-change">Change</button>' +
+      "</div>";
+
+    $("btn-confirm").onclick = function () {
+      if (state.game.votes_locked) return;
+      showError("");
+      // update_vote replaces the vote list atomically (works for both first
+      // submission and editing). Requires at least one card selected.
+      api("/update_vote", {
+        game_id: state.gameId,
+        player_id: state.playerId,
+        card_numbers: pendingVote,
+      })
+        .then(function (data) {
+          resetPendingVote();
+          state.game = data.game;
+          render();
+        })
+        .catch(function (e) {
+          showError(e.message);
+        });
+    };
+
+    $("btn-change").onclick = function () {
+      // Return to the grid, keeping the current selection visible.
+      previewReady = false;
       render();
     };
   }
@@ -689,6 +868,7 @@
     }
 
     var ph = state.game.phase;
+    if (ph !== "VOTE") resetPendingVote();
     if (ph === "LOBBY") {
       renderLobby();
     } else if (ph === "SELECT_NARRATOR") {
