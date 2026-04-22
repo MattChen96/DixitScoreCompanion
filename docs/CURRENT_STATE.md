@@ -97,19 +97,21 @@ Base scoring happens on entering `SCORE_BASE`; bonus scoring on entering
 
 ### 3.2 How points are displayed
 
-* The frontend **does not** render a dedicated scoring animation or a
-  per-round delta view.
-* Phases `SCORE_BASE`, `SCORE_BONUS`, and `LEADERBOARD` all render the
-  same screen: a sorted list of `{nickname, total score}`
-  (`frontend/app.js:renderLeaderboard`, lines ~604–630). `REVEAL_VOTES`,
-  `REVEAL_NARRATOR`, and `NEXT_ROUND` render a generic
-  "Host advances when ready" panel.
-* The host sees a Continue button enabled whenever the current phase
-  accepts a host advance (driven by `state.game.available_actions`).
-  Non-hosts see only the waiting/leaderboard screen.
-* There are no point-increment animations, no "Player A +3" lines, no
-  distinction in the UI between base and bonus. Only the new cumulative
-  total is visible after each host advance.
+* `SCORE_BASE` renders a **base-points panel**: a list of
+  `nickname +N` rows sorted by delta descending. Players with a zero
+  delta are shown dimmed. (`frontend/app.js:renderScoring("base")`)
+* `SCORE_BONUS` renders the same layout as a **bonus-points panel**.
+  (`frontend/app.js:renderScoring("bonus")`)
+* Both panels show only numbers — no explanation of the scoring rules.
+* `LEADERBOARD` renders sorted cumulative totals
+  (`frontend/app.js:renderLeaderboard`).
+* `REVEAL_NARRATOR` and `NEXT_ROUND` render a generic "Host advances
+  when ready" panel.
+* The host sees a Continue button (enabled when `next_phase` is in
+  `available_actions`). Non-hosts see the panel without the button.
+* Per-round deltas are stored on the game as `Game.last_base_delta`
+  and `Game.last_bonus_delta` (dicts of `player_id → points`),
+  populated by the rules engine and cleared on round reset.
 
 ---
 
@@ -144,11 +146,6 @@ Covered in detail in `APP_STATE.md`. In brief:
 
 ### 5.1 Gameplay limitations
 
-* **No progressive scoring display.** *(Note: items previously listed here for
-  single-vote-only, immutable votes, no vote preview, and no vote locking have
-  been implemented — see §2.)*
-* **No progressive scoring display.** `SCORE_BASE` and `SCORE_BONUS`
-  both just render the leaderboard; there is no per-round `+N` breakdown.
 * **Host disconnect stalls the game.** No host migration / handoff.
 
 ### 5.2 UX gaps

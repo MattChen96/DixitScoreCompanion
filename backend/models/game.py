@@ -40,6 +40,12 @@ class Game(BaseModel):
     cards_on_table: list[int] = Field(default_factory=list)
     score_base_applied: bool = False
     score_bonus_applied: bool = False
+    # Per-player point deltas for the current round, keyed by player id.
+    # Populated by the rules engine when SCORE_BASE / SCORE_BONUS is applied.
+    # Cleared on round reset so the previous round's deltas never bleed into
+    # the next round's display. An empty dict means scoring hasn't run yet.
+    last_base_delta: dict[str, int] = Field(default_factory=dict)
+    last_bonus_delta: dict[str, int] = Field(default_factory=dict)
     # Rules engine selector. Selects which RulesEngine implementation
     # to use for scoring and move validation. Defaults to "standard"
     # (canonical Dixit rules).

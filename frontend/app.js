@@ -818,6 +818,70 @@
     };
   }
 
+  function renderScoring(step) {
+    var game = state.game;
+    var deltas = step === "base" ? (game.last_base_delta || {}) : (game.last_bonus_delta || {});
+    var label = step === "base" ? "Base points this round" : "Bonus points this round";
+
+    var rows = game.players
+      .slice()
+      .sort(function (a, b) {
+        var da = deltas[a.id] || 0;
+        var db = deltas[b.id] || 0;
+        return db - da || a.id.localeCompare(b.id);
+      })
+      .map(function (p) {
+        var delta = deltas[p.id] || 0;
+        var name = escapeHtml(p.nickname) + (p.id === state.playerId ? " (you)" : "");
+        var pts = (delta > 0 ? "+" : "") + delta;
+        return (
+          '<div class="score-row"><span>' +
+          name +
+          "</span><strong" +
+          (delta === 0 ? ' class="muted"' : "") +
+          ">" +
+          pts +
+          "</strong></div>"
+        );
+      })
+      .join("");
+
+    var canNext = isHost() && actions().indexOf("next_phase") !== -1;
+    var hostBtn = isHost()
+      ? '<button type="button" class="primary" id="btn-next"' +
+        (canNext ? "" : " disabled") +
+        ">Continue</button>"
+      : "";
+
+    $("main").innerHTML =
+      '<div class="panel"><p class="muted">' +
+      label +
+      "</p>" +
+      rows +
+      hostBtn +
+      '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function () {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function (data) {
+            state.game = data.game;
+            render();
+          })
+          .catch(function (e) {
+            showError(e.message);
+          });
+      };
+    }
+    $("btn-leave").onclick = function () {
+      clearSession();
+      render();
+    };
+  }
+
   function renderHostContinue(label, canAdvanceOverride) {
     // The backend tells us whether next_phase is available; the frontend
     // only adds the identity check (is this player the host?).
@@ -953,10 +1017,12 @@
       renderVote();
     } else if (ph === "REVEAL_VOTES") {
       renderRevealVotes();
+    } else if (ph === "SCORE_BASE") {
+      renderScoring("base");
+    } else if (ph === "SCORE_BONUS") {
+      renderScoring("bonus");
     } else if (
       ph === "REVEAL_NARRATOR" ||
-      ph === "SCORE_BASE" ||
-      ph === "SCORE_BONUS" ||
       ph === "NEXT_ROUND"
     ) {
       renderHostContinue("Follow the table in the room. Host advances when ready.");

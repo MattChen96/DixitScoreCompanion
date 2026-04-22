@@ -80,6 +80,8 @@ def _reset_round_after_next(game: Game) -> None:
     game.score_base_applied = False
     game.score_bonus_applied = False
     game.votes_locked = False
+    game.last_base_delta.clear()
+    game.last_bonus_delta.clear()
 
 
 def _has_duplicate_cards(game: Game) -> bool:
