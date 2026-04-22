@@ -79,7 +79,6 @@ def _reset_round_after_next(game: Game) -> None:
     game.cards_on_table.clear()
     game.score_base_applied = False
     game.score_bonus_applied = False
-    game.votes_locked = False
     game.last_base_delta.clear()
     game.last_bonus_delta.clear()
 
@@ -234,14 +233,12 @@ def submit_vote(game_id: str, player_id: str, card_number: int) -> Game:
     """Add a single vote to the player's vote list.
 
     Can be called up to ``Game.votes_per_player`` times per player per round.
-    Votes are rejected once the host has locked them (``Game.votes_locked``).
+    Votes remain editable until the host advances the phase.
     """
     _require_card_number(card_number)
     game = _require_game(game_id)
     _require_phase(game, GamePhase.VOTE, "Voting")
 
-    if game.votes_locked:
-        raise ValueError("Votes are locked; no further votes can be submitted")
     if not game.cards_on_table:
         raise ValueError("There are no cards on the table to vote for yet")
 
@@ -270,15 +267,14 @@ def update_vote(game_id: str, player_id: str, card_numbers: list[int]) -> Game:
     """Replace a player's vote list entirely (for editing or multi-vote confirmation).
 
     Accepts 1 or 2 card numbers (up to ``Game.votes_per_player``). Replaces any
-    previously submitted votes atomically. Rejected once votes are locked.
+    previously submitted votes atomically. Votes stay editable until the host
+    advances the phase.
     """
     for card_number in card_numbers:
         _require_card_number(card_number)
     game = _require_game(game_id)
     _require_phase(game, GamePhase.VOTE, "Updating votes")
 
-    if game.votes_locked:
-        raise ValueError("Votes are locked; votes cannot be changed")
     if not game.cards_on_table:
         raise ValueError("There are no cards on the table to vote for yet")
     if not card_numbers:
@@ -303,22 +299,6 @@ def update_vote(game_id: str, player_id: str, card_numbers: list[int]) -> Game:
             raise ValueError("You cannot vote for your own card")
 
     player.votes = list(card_numbers)
-    return game
-
-
-def lock_votes(game_id: str, requester_id: str) -> Game:
-    """Lock all votes so no further submissions or edits are possible (host only).
-
-    Once locked, the host may advance from VOTE to REVEAL_VOTES.
-    The lock is cleared automatically on round reset.
-    """
-    game = _require_game(game_id)
-    _require_phase(game, GamePhase.VOTE, "Locking votes")
-    if requester_id != game.host_id:
-        raise ValueError("Only the host can lock votes")
-    if game.votes_locked:
-        raise ValueError("Votes are already locked")
-    game.votes_locked = True
     return game
 
 
@@ -360,12 +340,13 @@ def available_actions(game: Game) -> list[str]:
             actions.append("next_phase")
 
     elif phase == GamePhase.VOTE:
-        if not game.votes_locked:
-            actions.append("submit_vote")
-            actions.append("update_vote")
-            actions.append("lock_votes")
-        # Host can always advance from VOTE; locking is optional.
-        actions.append("next_phase")
+        actions.append("submit_vote")
+        actions.append("update_vote")
+        live_voters = [
+            p for p in active_players(game) if p.id != game.narrator_id
+        ]
+        if live_voters and all(len(p.votes) >= 1 for p in live_voters):
+            actions.append("next_phase")
 
     elif phase in (
         GamePhase.REVEAL_VOTES,

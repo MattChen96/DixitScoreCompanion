@@ -54,7 +54,3 @@ class Game(BaseModel):
     # Defaults to 1 (classic Dixit). Exposed in every broadcast so the
     # frontend can render the vote grid correctly without hardcoding.
     votes_per_player: int = 1
-    # Set to True by POST /lock_votes (host only). Once locked, submit_vote
-    # and update_vote are rejected and the host may advance to REVEAL_VOTES.
-    # Cleared on round reset (NEXT_ROUND → SELECT_NARRATOR).
-    votes_locked: bool = False

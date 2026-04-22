@@ -53,15 +53,16 @@ require explicit host input.
 * **1 or 2 votes per non-narrator player** (`Player.votes: list[int]`).
   The cap is `Game.votes_per_player` (1 or 2, set at game creation, default 1).
   The narrator cannot vote.
-* **Votes are editable** until the host locks them. While
-  `Game.votes_locked == false`, a player may call `POST /update_vote`
-  to replace their vote list, or `POST /submit_vote` to add a single vote
-  up to the cap.
-* **Vote locking** (`POST /lock_votes`, host only): sets
-  `Game.votes_locked = true`. Further `submit_vote` / `update_vote` calls
-  are then rejected. Locking is **optional** — the host can advance
-  `VOTE → REVEAL_VOTES` via `POST /next_phase` at any time, with or
-  without locking first.
+* **Votes are freely editable** throughout the VOTE phase. A player may
+  call `POST /update_vote` to replace their vote list, or
+  `POST /submit_vote` to add a single vote up to the cap. There is no
+  manual lock step — votes become final when the host advances the phase.
+* **Phase transition gate**: the host can advance `VOTE → REVEAL_VOTES`
+  via `POST /next_phase` only once every active non-narrator player has
+  cast at least one vote. The backend enforces this via
+  `available_actions` (which omits `next_phase` until the condition is
+  met); the frontend reflects it by enabling/disabling the Continue
+  button.
 * A player **cannot vote their own card** (server-enforced; own-card
   buttons are disabled and labelled `(yours)` in the frontend).
 * A player **cannot vote the same card twice** even when 2 votes are
@@ -70,7 +71,6 @@ require explicit host input.
 * **Vote preview (UI state)**: the frontend intercepts card selection and
   shows a VOTE_PREVIEW confirmation screen before calling `update_vote`.
   Clicking "Change" returns to the grid; clicking "Confirm" submits.
-* **Vote lock is cleared** on round reset (`NEXT_ROUND → SELECT_NARRATOR`).
 
 ---
 

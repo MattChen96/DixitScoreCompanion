@@ -75,11 +75,6 @@ class UpdateVoteRequest(_Body):
     card_numbers: list[CardNumberField] = Field(min_length=1, max_length=2)
 
 
-class LockVotesRequest(_Body):
-    game_id: GameIdField
-    player_id: PlayerIdField
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -214,11 +209,3 @@ async def update_vote(body: UpdateVoteRequest) -> dict[str, Any]:
     return {"game": _game_json(game)}
 
 
-@router.post("/lock_votes")
-async def lock_votes(body: LockVotesRequest) -> dict[str, Any]:
-    try:
-        game = game_service.lock_votes(body.game_id, body.player_id)
-    except ValueError as exc:
-        raise _http_from_value_error(exc) from exc
-    await ws_routes.notify_game_room(game, "votes_locked")
-    return {"game": _game_json(game)}

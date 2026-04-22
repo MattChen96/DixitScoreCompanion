@@ -48,7 +48,6 @@ Minimum Player shape required for any future state to remain valid:
 | `ruleset`                | `str`             | current  | Scoring ruleset (`"standard"` \| `"high_risk"` \| `"casual"`). Default `"standard"`. Immutable after game creation. |
 | `score_base_applied`     | `bool`            | current  | Idempotency guard: has base scoring been applied this round? |
 | `score_bonus_applied`    | `bool`            | current  | Idempotency guard: has bonus scoring been applied this round? |
-| `votes_locked`           | `bool`            | current  | `false` by default. When `true`, further `submit_vote` / `update_vote` calls are rejected. Set by `POST /lock_votes` (host only). Cleared on round reset. |
 | `votes_per_player`       | `int`             | current  | Max votes a non-narrator player may cast (1 or 2). Set at game creation (`POST /create_game {votes_per_player}`). Default `1`. Exposed in every broadcast so the frontend can render the vote grid correctly. |
 | `scoring_step`           | `"base" \| "bonus" \| null` | target | Tells the client which progressive-scoring panel to render. Set to `"base"` when the server applies base scores, `"bonus"` on bonus, and cleared on round reset. |
 
@@ -114,7 +113,6 @@ def delete_game(game_id: str) -> None: ...
   * every `Player.votes`
   * `Game.cards_on_table`
   * `Game.score_base_applied`, `Game.score_bonus_applied`
-  * `Game.votes_locked`
   * `Game.scoring_step` (target)
 * **Preserved across rounds**: `Player.score`, `Game.players`,
   `Game.host_id`, `Game.ruleset`.

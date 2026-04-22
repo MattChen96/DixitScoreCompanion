@@ -48,9 +48,8 @@ with `available_actions` and `card_range`.
 | Method | Path              | Status  | Body                                        | Returns / notes                           |
 |--------|-------------------|---------|---------------------------------------------|-------------------------------------------|
 | POST   | `/submit_card`    | current | `{game_id, player_id, card_number}`         | `{game}`. On duplicate card number: round is reset and `game_error` / `duplicate_cards` is broadcast (HTTP 200 with the post-reset `game`). |
-| POST   | `/submit_vote`    | current | `{game_id, player_id, card_number}`         | `{game}`. Appends `card_number` to `Player.votes`. Rejected if narrator, wrong phase, votes locked, already at cap, duplicate, own card, or not on table. |
-| POST   | `/update_vote`    | current | `{game_id, player_id, card_numbers: list[int]}` | `{game}`. Replaces `Player.votes` with the given list. Rejected if `Game.votes_locked == true`, wrong phase, narrator, `len(card_numbers) > Game.votes_per_player`, duplicates, own card, or any card not on the table. |
-| POST   | `/lock_votes`     | current | `{game_id, player_id}` (host only)          | `{game}`. Sets `Game.votes_locked = true`. Only legal in `VOTE`. After locking, `/next_phase` is what actually advances to `REVEAL_VOTES`. |
+| POST   | `/submit_vote`    | current | `{game_id, player_id, card_number}`         | `{game}`. Appends `card_number` to `Player.votes`. Rejected if narrator, wrong phase, already at cap, duplicate, own card, or not on table. |
+| POST   | `/update_vote`    | current | `{game_id, player_id, card_numbers: list[int]}` | `{game}`. Replaces `Player.votes` with the given list. Rejected if wrong phase, narrator, `len(card_numbers) > Game.votes_per_player`, duplicates, own card, or any card not on the table. |
 
 Validation (Pydantic):
 
@@ -66,8 +65,7 @@ Validation (Pydantic):
 |-------------------|------------------------------------------------------------------------|
 | Field set         | Appends `card_number` to `Player.votes` (list).                        |
 | Allowed votes     | Up to `Game.votes_per_player` (1 or 2). Error if already at cap.       |
-| Re-submission     | Rejected if `Game.votes_locked`; use `/update_vote` to replace votes.  |
-| Lock              | Rejected if `Game.votes_locked == true`.                               |
+| Re-submission     | Use `/update_vote` to replace the full vote list at any time.            |
 
 ### 1.5 `/next_phase` side-effects
 
@@ -76,11 +74,11 @@ Validation (Pydantic):
 | From → To                          | Side effects                                                                                         | WS event emitted               |
 |------------------------------------|------------------------------------------------------------------------------------------------------|--------------------------------|
 | `PLAY_CARDS → VOTE`                | Defence-in-depth duplicate-card check; if duplicates are found, the round is reset (same as `/submit_card`). | `phase_changed` or `game_error`|
-| `VOTE → REVEAL_VOTES`              | Requires all active non-narrators to have voted **and** `Game.votes_locked == true`. | `phase_changed`                |
+| `VOTE → REVEAL_VOTES`              | Requires all active non-narrators to have voted at least 1 card. | `phase_changed`                |
 | `REVEAL_NARRATOR → SCORE_BASE`     | `rules_engine.calculate_scores(game)` applies base scoring; `score_base_applied = true`; **target**: `scoring_step = "base"` and `last_base_delta` computed. | `scores_updated`               |
 | `SCORE_BASE → SCORE_BONUS`         | `rules_engine.calculate_scores(game)` applies bonus scoring; `score_bonus_applied = true`; **target**: `scoring_step = "bonus"` and `last_bonus_delta` computed. | `scores_updated`               |
 | `SCORE_BONUS → LEADERBOARD`        | —                                                                                                    | `scores_updated`               |
-| `NEXT_ROUND → SELECT_NARRATOR`     | Round reset: clears `card_played`, `votes`, `cards_on_table`, scoring flags, `votes_locked`. `scoring_step` (target) is also cleared when implemented. Scores are preserved. | `phase_changed`                |
+| `NEXT_ROUND → SELECT_NARRATOR`     | Round reset: clears `card_played`, `votes`, `cards_on_table`, scoring flags. `scoring_step` (target) is also cleared when implemented. Scores are preserved. | `phase_changed`                |
 | Any other transition               | —                                                                                                    | `phase_changed`                |
 
 `LOBBY → SELECT_NARRATOR` and `SELECT_NARRATOR → PLAY_CARDS` cannot be
@@ -122,7 +120,6 @@ Errors use:
 | `submit_card`   | current | `{player_id, card_number}`                 | Same effect as `POST /submit_card` (including duplicate reset + `game_error`).                         |
 | `submit_vote`   | current | `{player_id, card_number}`                 | Same effect as `POST /submit_vote`.                                                                    |
 | `update_vote`   | current | `{player_id, card_numbers: list[int]}`    | Same effect as `POST /update_vote`.                                                                    |
-| `lock_votes`    | current | `{player_id}`                              | Same effect as `POST /lock_votes` (host only).                                                         |
 | `reconnect`     | current | `{player_id, recovery_token}`              | On success: per-socket `game_state` + room `player_reconnected`. On failure: `error` / `recovery_failed` + close `1008`. |
 | `ping`          | current | `{player_id}`                              | Server replies `pong` (per-socket) and refreshes `player.last_seen`. Cadence: ~15 s from the client.    |
 
@@ -130,9 +127,9 @@ Notes:
 
 * Any inbound event from a known player updates `last_seen` and flips
   `connected = true`.
-* The WebSocket variants of `update_vote` and `lock_votes` mirror the
-  REST endpoints for parity with `submit_card` / `submit_vote`; the REST
-  endpoints are the primary surface.
+* The WebSocket variant of `update_vote` mirrors the REST endpoint for
+  parity with `submit_card` / `submit_vote`; the REST endpoints are the
+  primary surface.
 
 ### 2.3 Server → Client
 
@@ -143,7 +140,6 @@ Notes:
 | `phase_changed`        | current | `{event, game}`                                                           | Room-wide after a non-scoring phase transition.       |
 | `card_submitted`       | current | `{event, game}`                                                           | Room-wide after a card is submitted (REST or WS).     |
 | `vote_submitted`       | current | `{event, game}`                                                           | Room-wide after a vote is submitted (`submit_vote`) or updated (`update_vote`). |
-| `votes_locked`         | current | `{event, game}`                                                           | Room-wide after `/lock_votes` (host action).          |
 | `scores_updated`       | current | `{event, game}`                                                           | Room-wide after entering `SCORE_BASE`, `SCORE_BONUS`, or `LEADERBOARD`. In the target state, `game.scoring_step` (`"base"` \| `"bonus"`) and `game.last_base_delta` / `last_bonus_delta` drive the progressive-scoring UI. |
 | `game_error`           | current | `{event: "game_error", error: <code>, message: <string>, game: <Game>}`    | Room-wide gameplay errors. Current codes: `duplicate_cards`. |
 | `player_reconnected`   | current | `{event, game}`                                                           | Room-wide after a successful `reconnect`.             |
@@ -165,7 +161,7 @@ Future `game_error` codes should follow the same shape.
 
 * Every action validates the current phase; out-of-phase calls are
   rejected.
-* Only the host can trigger phase transitions and the `lock_votes` action.
+* Only the host can trigger phase transitions.
 * `recovery_token` is never included in any broadcast or in any REST
   response apart from `/join_game`.
 * The `game` field on every outbound message is the **sanitized**

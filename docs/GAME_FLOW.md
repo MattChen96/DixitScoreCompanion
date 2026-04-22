@@ -54,21 +54,21 @@ Every `Game` starts in `LOBBY` and loops from `NEXT_ROUND` back to
 | `LOBBY`           | `POST /join_game` (any number)                   | `POST /start_game` (≥ 3 players required)      | `/start_game`                                       | `SELECT_NARRATOR`|
 | `SELECT_NARRATOR` | —                                                | `POST /select_narrator {narrator_id}`          | `/select_narrator`                                  | `PLAY_CARDS`     |
 | `PLAY_CARDS`      | `POST /submit_card {card_number}` — each active player including the narrator picks a **unique** card number | `POST /next_phase`                             | `/next_phase` (validation: all active players played, narrator has played, all card numbers unique) | `VOTE`           |
-| `VOTE`            | `POST /submit_vote {card_number}` — non-narrator players only; narrator may not vote; must not be own card; must be a card currently on the table. **Target**: editable until host locks (`POST /update_vote`); **Current**: immutable. | **Target**: `POST /lock_votes` then `POST /next_phase`. **Current**: `POST /next_phase` directly. | `/next_phase` (validation: all active non-narrators have voted; target: `votes_locked == true`) | `REVEAL_VOTES`   |
+| `VOTE`            | `POST /submit_vote {card_number}` or `POST /update_vote {card_numbers}` — non-narrator only; freely editable until host advances. | `POST /next_phase`                             | `/next_phase` (validation: all active non-narrators have ≥1 vote) | `REVEAL_VOTES`   |
 | `REVEAL_VOTES`    | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `REVEAL_NARRATOR`|
 | `REVEAL_NARRATOR` | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **base** scores via rules engine) | `SCORE_BASE`     |
 | `SCORE_BASE`      | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **bonus** scores via rules engine) | `SCORE_BONUS`    |
 | `SCORE_BONUS`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `LEADERBOARD`    |
 | `LEADERBOARD`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `NEXT_ROUND`     |
-| `NEXT_ROUND`      | —                                                | `POST /next_phase`                             | `/next_phase` (server resets round data: `card_played`, `vote[s]`, `cards_on_table`, scoring flags, `votes_locked`) | `SELECT_NARRATOR` |
+| `NEXT_ROUND`      | —                                                | `POST /next_phase`                             | `/next_phase` (server resets round data: `card_played`, `votes`, `cards_on_table`, scoring flags) | `SELECT_NARRATOR` |
 
 Rules:
 
 * **Only the host** may trigger phase transitions (`host_id` is set to
   the first joiner and never changes).
-* **Players** may only call `submit_card` / `submit_vote` (and the
-  target-state `update_vote`) during the corresponding phase; every
-  other call in a wrong phase is rejected.
+* **Players** may only call `submit_card` / `submit_vote` /
+  `update_vote` during the corresponding phase; every other call in a
+  wrong phase is rejected.
 * `/next_phase` is the generic advance. `LOBBY → SELECT_NARRATOR` and
   `SELECT_NARRATOR → PLAY_CARDS` are the two exceptions and use
   dedicated endpoints so the host's explicit inputs (start / narrator
@@ -93,18 +93,16 @@ Entered when a player taps a card in the vote grid.
     waiting screen.
   * **Change** → exits VOTE_PREVIEW back to the vote grid with the
     current selection remembered.
-* Does **not** change the server phase. If `Game.votes_locked` becomes
-  `true` while in this state, the preview becomes read-only until the
-  host advances.
+* Does **not** change the server phase. If the host advances while a
+  player is in preview, the client re-renders to the new phase on the
+  next broadcast.
 
 > **Implementation note (current):** `renderVotePreview` is implemented as
 > a client-side UI state driven by the module-level `pendingVote` variable
-> in `frontend/app.js`. "Confirm" currently calls `POST /submit_vote` only
-> (single-vote backend); `POST /update_vote` and re-entry from the
-> already-voted waiting screen require the `update_vote` endpoint and
-> `votes_locked` flag, which are not yet implemented. The render function
-> accepts `pendingVote` as a number or array and normalises to an array
-> internally, so displaying 1 or 2 cards requires no further UI changes.
+> in `frontend/app.js`. "Confirm" calls `POST /update_vote` to atomically
+> set the player's vote list. "Change" returns to the vote grid. Players
+> can re-enter the preview from the waiting screen at any time to change
+> their selection.
 
 ### 4.2 Waiting panels
 
@@ -188,7 +186,6 @@ Clears:
 * every `Player.vote` (current) / `Player.votes` (target)
 * `Game.cards_on_table`
 * `Game.score_base_applied` / `Game.score_bonus_applied`
-* `Game.votes_locked` (target)
 * `Game.scoring_step` (target)
 
 Preserves:

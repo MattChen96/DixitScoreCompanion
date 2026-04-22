@@ -508,17 +508,16 @@
 
     var votesPerPlayer = state.game.votes_per_player || 1;
     var myVotes = p.votes || [];
-    var votesLocked = !!state.game.votes_locked;
 
     // The narrator never votes; show waiting / host-advance panel.
     if (state.playerId === state.game.narrator_id) {
-      renderVoteWaiting(votesLocked);
+      renderVoteWaiting();
       return;
     }
 
     // Player already has at least one confirmed vote and is not editing.
     if (myVotes.length > 0 && pendingVote === null) {
-      renderVoteWaiting(votesLocked);
+      renderVoteWaiting();
       return;
     }
 
@@ -619,42 +618,31 @@
   }
 
   // Waiting panel shown to players who have already voted (or are the narrator)
-  // during the VOTE phase. Handles host lock/continue buttons inline.
-  function renderVoteWaiting(votesLocked) {
+  // during the VOTE phase. Host sees Continue when all active voters have voted.
+  function renderVoteWaiting() {
     var isNarrator = state.playerId === state.game.narrator_id;
-    var canLock = !votesLocked && actions().indexOf("lock_votes") !== -1;
-    var canAdvance = actions().indexOf("next_phase") !== -1;
+    var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
 
     var label;
     if (isHost()) {
-      label = votesLocked
-        ? "Votes locked — continue when ready."
-        : "Continue when ready, or lock votes first.";
+      label = canAdvance
+        ? "All votes are in — continue when ready."
+        : "Waiting for all players to vote…";
     } else if (isNarrator) {
-      label = votesLocked
-        ? "Votes locked. Waiting for the host to continue."
-        : "You are the storyteller — waiting for the host.";
-    } else if (votesLocked) {
-      label = "Votes locked. Waiting for the host to continue.";
+      label = "You are the storyteller — waiting for the host.";
     } else {
       label = "Waiting for other votes…";
     }
 
     var html = '<div class="panel"><p class="muted">' + escapeHtml(label) + "</p>";
 
-    // "Change vote" — non-narrator player, votes not yet locked.
-    if (!isNarrator && !votesLocked) {
+    // Non-narrator players can always change their vote during VOTE phase.
+    if (!isNarrator) {
       html += '<button type="button" class="ghost" id="btn-change-vote" style="margin-top:0.5rem">Change vote</button>';
     }
 
-    // Host actions.
-    if (isHost()) {
-      if (canLock) {
-        html += '<button type="button" class="primary" id="btn-lock" style="margin-top:0.75rem">Lock votes</button>';
-      }
-      if (canAdvance) {
-        html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue</button>';
-      }
+    if (canAdvance) {
+      html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue</button>';
     }
 
     html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
@@ -664,20 +652,9 @@
     if (btnChangeVote) {
       btnChangeVote.onclick = function () {
         var p = me();
-        // Pre-load existing votes into the selection so the grid shows them.
         pendingVote = (p && p.votes) ? p.votes.slice() : [];
         previewReady = false;
         render();
-      };
-    }
-
-    var btnLock = $("btn-lock");
-    if (btnLock) {
-      btnLock.onclick = function () {
-        showError("");
-        api("/lock_votes", { game_id: state.gameId, player_id: state.playerId })
-          .then(function (data) { state.game = data.game; render(); })
-          .catch(function (e) { showError(e.message); });
       };
     }
 
@@ -702,9 +679,8 @@
   // Confirm (submits via update_vote) and Change (back to grid) actions.
   function renderVotePreview() {
     var selection = pendingVote || [];
-    var canSubmit = !state.game.votes_locked &&
-                    (actions().indexOf("update_vote") !== -1 ||
-                     actions().indexOf("submit_vote") !== -1);
+    var canSubmit = actions().indexOf("update_vote") !== -1 ||
+                    actions().indexOf("submit_vote") !== -1;
     var tiles = selection
       .map(function (c) {
         return '<div class="vote-preview-card">' + escapeHtml(String(c)) + "</div>";
@@ -722,7 +698,6 @@
       "</div>";
 
     $("btn-confirm").onclick = function () {
-      if (state.game.votes_locked) return;
       showError("");
       // update_vote replaces the vote list atomically (works for both first
       // submission and editing). Requires at least one card selected.
