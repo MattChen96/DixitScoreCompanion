@@ -33,6 +33,9 @@
 * narrator_id: string | null
 * phase: string
 * cards_on_table: list[int]
+* ruleset: string (default = "standard")
+  * Selects which rules implementation (e.g. `StandardDixitRules`) to use
+    for scoring and move validation. Set at game creation, immutable after.
 
 ---
 

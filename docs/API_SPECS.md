@@ -2,8 +2,15 @@
 
 ## REST Endpoints
 
+GET /rulesets
+→ returns list of available ruleset names for game creation
+→ example: `[{"name": "casual"}, {"name": "high_risk"}, {"name": "standard"}]`
+→ automatically reflects all registered rulesets; no hardcoding on client
+
 POST /create_game
-→ returns game_id
+→ input: (optional) `{ruleset}` — defaults to `"standard"` if omitted
+→ returns `{game_id}`
+→ fails with `400` if `ruleset` is unknown
 
 POST /join_game
 → input: game_id, nickname
@@ -13,16 +20,27 @@ POST /join_game
     other REST response strips it. The client sends it back over the
     WebSocket `reconnect` event to resume a session after a tab refresh or
     brief network drop.
+  * `game` includes computed fields:
+    - `available_actions` — list of action names legal in the current state
+      (e.g. `["submit_card", "next_phase"]`), empowering the client to know
+      what is permissible without reimplementing game logic.
+    - `card_range` — `{min, max}` for card number validation, so the client
+      never hardcodes Dixit-specific bounds.
 
 POST /start_game
+→ returns `{game}`
 
 POST /next_phase
+→ returns `{game}`
 
 POST /select_narrator
+→ returns `{game}`
 
 POST /submit_card
+→ returns `{game}`
 
 POST /submit_vote
+→ returns `{game}`
 
 ---
 

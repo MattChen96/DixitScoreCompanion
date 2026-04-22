@@ -132,6 +132,16 @@
       cursor: pointer;
     }
     .vote-grid button:active { background: #252b35; }
+    .vote-grid button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+      border-style: dashed;
+    }
+    .vote-grid button.own-card {
+      border-color: var(--accent);
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
     .score-row {
       display: flex;
       justify-content: space-between;

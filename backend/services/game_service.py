@@ -2,8 +2,8 @@
 Game service layer.
 
 The only place that mutates game state. Validates inputs against the current
-phase, and delegates phase transitions to :mod:`backend.services.state_machine`
-and scoring to :mod:`backend.services.scoring`.
+phase, delegates phase transitions to :mod:`backend.services.state_machine`,
+and scoring to the rules engine (:mod:`backend.rules.rules_loader`).
 """
 
 import time
@@ -14,8 +14,28 @@ from backend import store
 from backend.models.constants import MAX_CARD_NUMBER, MIN_CARD_NUMBER
 from backend.models.game import Game, Player
 from backend.models.game_phase import GamePhase
-from backend.services import scoring
+from backend.rules.base_rules import RulesEngine
+from backend.rules.rules_loader import load_rules
 from backend.services.state_machine import advance_phase_by_host, transition_phase
+
+# Per-ruleset engine cache. Rulesets are stateless (they only read point
+# values from their JSON config), so a single instance per name is safe
+# and avoids re-reading the config on every next_phase call.
+_engine_cache: dict[str, RulesEngine] = {}
+
+
+def _engine_for(game: Game) -> RulesEngine:
+    """Return the rules engine for a game, loading on first use.
+
+    Uses ``Game.ruleset`` — set at creation and immutable thereafter —
+    so a game started with ``"high_risk"`` scores using ``HighRiskRules``
+    and never gets silently downgraded to standard rules.
+    """
+    engine = _engine_cache.get(game.ruleset)
+    if engine is None:
+        engine = load_rules(game.ruleset)
+        _engine_cache[game.ruleset] = engine
+    return engine
 
 # WebSocket "game_error" payload used when two players play the same card.
 DUPLICATE_CARDS_ERROR = "duplicate_cards"
@@ -43,6 +63,22 @@ def _reset_play_cards_round(game: Game) -> None:
         p.card_played = None
         p.vote = None
     game.cards_on_table.clear()
+
+
+def _reset_round_after_next(game: Game) -> None:
+    """Clear per-round fields on NEXT_ROUND → SELECT_NARRATOR.
+
+    This is round lifecycle, not scoring — it runs after both scoring
+    passes have already been applied and prepares a fresh round. Keeping
+    it here (rather than in the rules engine) avoids widening the
+    engine's surface area for logic that isn't rule-dependent.
+    """
+    for p in game.players:
+        p.card_played = None
+        p.vote = None
+    game.cards_on_table.clear()
+    game.score_base_applied = False
+    game.score_bonus_applied = False
 
 
 def _has_duplicate_cards(game: Game) -> bool:
@@ -80,9 +116,14 @@ def _require_card_number(card_number: int) -> None:
         )
 
 
-def create_game() -> Game:
+def create_game(ruleset: str = "standard") -> Game:
+    # Fail fast on an unknown ruleset name so we never create a game
+    # that would later fail at start or scoring time. The resulting
+    # engine is cached for subsequent _engine_for(game) calls.
+    _engine_cache.setdefault(ruleset, load_rules(ruleset))
+
     game_id = uuid.uuid4().hex[:8].upper()
-    game = Game(id=game_id)
+    game = Game(id=game_id, ruleset=ruleset)
     store.set_game(game_id, game)
     return game
 
@@ -114,6 +155,12 @@ def start_game(game_id: str, requester_id: str) -> Game:
         raise ValueError("Game has already started")
     if len(game.players) < 3:
         raise ValueError("At least 3 players required")
+
+    # Load the rules engine for this game at start time. create_game
+    # already validated the name, but pre-warming here binds the chosen
+    # ruleset to the active session and makes subsequent scoring a
+    # straight cache hit.
+    _engine_for(game)
 
     transition_phase(game, requester_id, GamePhase.SELECT_NARRATOR)
     return game
@@ -148,12 +195,10 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     advance_phase_by_host(game, requester_id)
     new_phase = game.phase
 
-    if new_phase == GamePhase.SCORE_BASE:
-        scoring.apply_score_base(game)
-    elif new_phase == GamePhase.SCORE_BONUS:
-        scoring.apply_score_bonus(game)
+    if new_phase in (GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS):
+        _engine_for(game).calculate_scores(game)
     elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.SELECT_NARRATOR:
-        scoring.reset_round_after_next(game)
+        _reset_round_after_next(game)
 
     return game
 
@@ -198,9 +243,69 @@ def submit_vote(game_id: str, player_id: str, card_number: int) -> Game:
             "Vote must be for a card that is on the table "
             "(one of the submitted card numbers)."
         )
+    if card_number == player.card_played:
+        raise ValueError("You cannot vote for your own card")
 
     player.vote = card_number
     return game
+
+
+# ---------------------------------------------------------------------------
+# Available actions (sent to clients on every broadcast)
+# ---------------------------------------------------------------------------
+
+
+def available_actions(game: Game) -> list[str]:
+    """Return the game-level actions currently available.
+
+    This is broadcast inside every ``game_wire`` payload so the frontend
+    never needs to replicate phase-transition conditions, active-player
+    counts, or ruleset constants. The list is game-level (not per-player);
+    the frontend layers identity checks (is the current player the host?)
+    on top where needed.
+
+    Action names map 1-to-1 to API call names:
+    * ``"start_game"``      — LOBBY, ≥3 players present
+    * ``"select_narrator"`` — SELECT_NARRATOR phase active
+    * ``"submit_card"``     — PLAY_CARDS phase active
+    * ``"submit_vote"``     — VOTE phase active
+    * ``"next_phase"``      — host may advance; all round conditions satisfied
+    """
+    actions: list[str] = []
+    phase = game.phase
+
+    if phase == GamePhase.LOBBY:
+        if len(game.players) >= 3:
+            actions.append("start_game")
+
+    elif phase == GamePhase.SELECT_NARRATOR:
+        actions.append("select_narrator")
+
+    elif phase == GamePhase.PLAY_CARDS:
+        actions.append("submit_card")
+        live = active_players(game)
+        if live and all(p.card_played is not None for p in live):
+            actions.append("next_phase")
+
+    elif phase == GamePhase.VOTE:
+        actions.append("submit_vote")
+        live = active_players(game)
+        if live and all(
+            p.vote is not None for p in live if p.id != game.narrator_id
+        ):
+            actions.append("next_phase")
+
+    elif phase in (
+        GamePhase.REVEAL_VOTES,
+        GamePhase.REVEAL_NARRATOR,
+        GamePhase.SCORE_BASE,
+        GamePhase.SCORE_BONUS,
+        GamePhase.NEXT_ROUND,
+        GamePhase.LEADERBOARD,
+    ):
+        actions.append("next_phase")
+
+    return actions
 
 
 # ---------------------------------------------------------------------------

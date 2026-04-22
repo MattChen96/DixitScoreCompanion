@@ -21,7 +21,8 @@ from fastapi.testclient import TestClient
 from backend import store
 from backend.main import app
 from backend.models.game_phase import GamePhase
-from backend.services import game_service, heartbeat, scoring
+from backend.rules.rules_loader import load_rules
+from backend.services import game_service, heartbeat
 from backend.routes import websocket as ws_routes
 
 
@@ -311,9 +312,15 @@ def scenario_5_narrator_never_played_stall(client: TestClient) -> None:
     b_player = next(p for p in game.players if p.id == b["player_id"])
     b_player.connected = False
 
+    # Exercise the scoring path through the rules engine. We force the phase
+    # to SCORE_BASE so calculate_scores() runs its round-complete validation,
+    # which is the exact code path that next_phase() would hit on the
+    # REVEAL_NARRATOR → SCORE_BASE transition.
+    engine = load_rules("standard")
+    game.phase = GamePhase.SCORE_BASE
     raised = False
     try:
-        scoring._validate_round_complete(game)
+        engine.calculate_scores(game)
     except ValueError as exc:
         raised = True
         _check(
@@ -321,7 +328,7 @@ def scenario_5_narrator_never_played_stall(client: TestClient) -> None:
             "narrator" in str(exc).lower(),
             f"msg={exc}",
         )
-    _check("scoring validation raised for missing narrator card", raised)
+    _check("rules engine blocked scoring for missing narrator card", raised)
 
 
 def scenario_6_duplicate_while_disconnected(client: TestClient) -> None:

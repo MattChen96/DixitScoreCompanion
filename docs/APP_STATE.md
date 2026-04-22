@@ -23,12 +23,22 @@ backend/
 │   ├── __init__.py               # (empty package marker)
 │   ├── game.py                   # REST endpoints + request schemas
 │   └── websocket.py              # /ws/{game_id} endpoint, broadcast + game_wire helpers
+├── rules/                        # Rules engine — owns all scoring logic
+│   ├── __init__.py               # Re-exports RulesEngine + load_rules
+│   ├── base_rules.py             # Abstract RulesEngine base class (ABC)
+│   ├── rules_loader.py           # load_rules(name), available_rulesets()
+│   ├── config/                   # JSON point values per ruleset
+│   │   ├── standard.json         # Classic Dixit scoring
+│   │   ├── high_risk.json        # Amplified rewards, narrator penalties
+│   │   └── casual.json           # Low-stakes, forgiving
+│   ├── standard_dixit.py         # StandardDixitRules → standard.json
+│   ├── high_risk_rules.py        # HighRiskRules → high_risk.json
+│   └── casual_rules.py           # CasualRules → casual.json
 └── services/
     ├── __init__.py               # (empty package marker)
     ├── state_machine.py          # ALLOWED_TRANSITIONS, transition_phase, advance_phase_by_host
-    ├── scoring.py                # apply_score_base, apply_score_bonus, reset_round_after_next
     ├── heartbeat.py              # Background task: flip silent players to connected=False
-    └── game_service.py           # The only place that mutates game state
+    └── game_service.py           # The only place that mutates game state; resolves the per-game rules engine via _engine_for(game)
 ```
 
 Layer rules (enforced by import direction):
@@ -49,6 +59,16 @@ frontend/
 The frontend renders **purely from `state.game`** received from the server. It never
 computes scores or phase transitions locally; it only formats and sends actions.
 
+The frontend is intentionally rule-agnostic:
+
+* No hardcoded phase transition logic. The backend's `available_actions` list
+  tells it what the host can do.
+* No hardcoded card bounds. The backend's `card_range` provides min/max.
+* No active-player counting or vote-in checks. The backend computes these and
+  includes the results in `available_actions`.
+* Ruleset constants are never embedded in the frontend. All point values, bonus
+  multipliers, and scoring gates live in the rules engine config files.
+
 `localStorage` keys: `dixit_game_id`, `dixit_player_id`, `dixit_recovery_token` —
 used to survive page reload and to drive automatic WebSocket reconnect. The
 token is stored only in `localStorage`; the server never echoes it back in
@@ -67,7 +87,13 @@ broadcasts.
     broadcasts `game_state` to the room (legacy path, still supported).
 * Every broadcast carries the **sanitized** `Game` projection
   (`backend/routes/websocket.py:game_wire`) so `recovery_token` never leaks to
-  other players.
+  other players. This projection also augments the model with two computed fields:
+  - `available_actions` — list of action names legal right now (e.g.
+    `["submit_card", "next_phase"]`), empowering the client to know what the
+    host can trigger without reimplementing game logic.
+  - `card_range` — `{min, max}` for card inputs, so the frontend never hardcodes
+    Dixit-specific bounds; useful for supporting alternate card ranges in
+    the future.
 * Every ~15 s the client sends `{event: "ping", data: {player_id}}`; the server
   replies `{event: "pong"}` and refreshes `player.last_seen`. Any inbound
   game action (`submit_card`, `submit_vote`, `reconnect`) has the same
@@ -128,32 +154,72 @@ listed there is reachable; no others are allowed.
 be advanced this way — they require `/start_game` and `/select_narrator` so the
 host’s explicit input is captured.
 
-### 2.3 Scoring (deterministic; server-only)
+### 2.3 Scoring (ruleset-dependent; server-only)
 
-Computed once when the host enters `SCORE_BASE` and once when entering `SCORE_BONUS`.
-Both are guarded by idempotency flags (`score_base_applied`, `score_bonus_applied`).
+All scoring lives in the **rules engine** (`backend/rules/`) and is reached
+exclusively via `rules_engine.calculate_scores(game)`.
 
-Base (`apply_score_base`):
+#### Available Rulesets
 
-* Pre-conditions validated: narrator set, every player has played a card, every
-  non-narrator has voted, no two players played the same card number.
+* **`standard`** (default) — classic Dixit scoring from official rules.
+  Config: `backend/rules/config/standard.json`
+  * Base: narrator=0 all|none guessed (others +2), else narrator +3 and correct +3
+  * Bonus: +1 per vote received
+
+* **`high_risk`** — amplified rewards for success, penalties for failure.
+  Config: `backend/rules/config/high_risk.json`
+  * Base: narrator=-2 if all|none (others +3), else narrator +5 and correct +5
+  * Bonus: +2 per vote received
+
+* **`casual`** — forgiving, beginner-friendly scoring.
+  Config: `backend/rules/config/casual.json`
+  * Base: narrator=+1 if all|none (others +2), else narrator +2 and correct +2
+  * Bonus: +1 per vote received
+
+#### Engine Architecture
+
+Each game picks its ruleset at creation time (`POST /create_game {ruleset}`,
+stored on `Game.ruleset`, immutable afterwards).
+
+`game_service._engine_for(game)` resolves the ruleset name via
+`rules_loader.load_rules(...)` and caches one stateless engine instance per
+ruleset name for efficiency. The engine is pre-warmed at `start_game` and
+called from `next_phase` when the transition lands on `SCORE_BASE` or
+`SCORE_BONUS`.
+
+`create_game` validates the ruleset name immediately so an unknown name
+returns a `400` instead of blowing up later.
+
+Routes and services contain **no** scoring logic.
+
+`calculate_scores` dispatches by the current phase and is guarded by the
+idempotency flags on `Game` (`score_base_applied`, `score_bonus_applied`).
+
+Base scoring (`phase == SCORE_BASE`):
+
+* Pre-conditions validated: narrator set, narrator has played a card (stall
+  policy — applies even if the narrator is disconnected), every **active**
+  player has played a card, every **active** non-narrator has voted, no two
+  players played the same card number.
 * Let `voters` = non-narrator players. Let `correct` = voters who voted for the
   narrator’s card.
   * If `len(correct) == 0` **or** `len(correct) == len(voters)`:
     narrator gets **0**, every other player gets **+2**.
   * Otherwise: narrator gets **+3**, every correct guesser gets **+3**, others **0**.
 
-Bonus (`apply_score_bonus`):
+Bonus scoring (`phase == SCORE_BONUS`):
 
 * For every player (including the narrator), add **+1 per vote received** on the
   card they played this round.
 * Requires `score_base_applied == True`.
 
-Reset (`reset_round_after_next`):
+Round reset (`_reset_round_after_next`, in `game_service`):
 
 * Triggered when `/next_phase` advances `NEXT_ROUND → SELECT_NARRATOR`.
 * Clears every `Player.card_played`, `Player.vote`, `Game.cards_on_table`, and
   both score-applied flags. Player **scores are preserved** across rounds.
+* Lives in `game_service` (not the rules engine) because it's round lifecycle,
+  not rule-dependent logic.
 
 ### 2.4 Deviations from `GAME_FLOW.md`
 
@@ -185,7 +251,7 @@ else (Pydantic validation errors return `422` automatically).
 
 | Method | Path              | Body                                                | Returns                                                        |
 |--------|-------------------|-----------------------------------------------------|----------------------------------------------------------------|
-| POST   | `/create_game`    | *(none)*                                            | `{"game_id": str}`                                             |
+| POST   | `/create_game`    | `{ruleset?}` (optional, default `"standard"`)      | `{"game_id": str}`                                             |
 | POST   | `/join_game`      | `{game_id, nickname}`                               | `{player_id, game_id, recovery_token, game}` + WS `player_joined` broadcast |
 | POST   | `/start_game`     | `{game_id, player_id}`                              | `{game}` + WS `phase_changed`                                  |
 | POST   | `/next_phase`     | `{game_id, player_id}`                              | `{game}` + WS `phase_changed` / `scores_updated` / `game_error` (duplicate guard) |
@@ -291,8 +357,8 @@ Defined in `backend/models/game.py` using Pydantic v2 (`extra="forbid"`).
 | `narrator_id`         | `str \| None`    | `None`        | Set in SELECT_NARRATOR; persists until next round    |
 | `phase`               | `GamePhase`      | `LOBBY`       | One of the ten phases enumerated above               |
 | `cards_on_table`      | `list[int]`      | `[]`          | Submission order; cleared on round reset             |
-| `score_base_applied`  | `bool`           | `False`       | Idempotency guard for `apply_score_base`             |
-| `score_bonus_applied` | `bool`           | `False`       | Idempotency guard for `apply_score_bonus`            |
+| `score_base_applied`  | `bool`           | `False`       | Idempotency guard for base scoring in `StandardDixitRules` |
+| `score_bonus_applied` | `bool`           | `False`       | Idempotency guard for bonus scoring in `StandardDixitRules` |
 
 `Game.phase` serializes as its string value (e.g. `"PLAY_CARDS"`) in JSON.
 
@@ -390,8 +456,9 @@ Open `http://localhost:8000` on each player’s phone (same LAN).
 
 ## 7. Change Discipline
 
-* Any change to game rules **must** update `backend/services/scoring.py` or
-  `backend/services/state_machine.py` **and** this document in the same commit.
+* Any change to game rules **must** update `backend/rules/standard_dixit.py`
+  (or `backend/services/state_machine.py` for phase-flow changes) **and** this
+  document in the same commit.
 * Any new REST endpoint or WebSocket event **must** be reflected in section 3.
 * Any new field on `Player` / `Game` **must** be reflected in section 4.
 * The backend remains the single source of truth — clients render `state.game`

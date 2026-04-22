@@ -60,11 +60,11 @@ NEXT_ROUND
 
 ### SCORE_BASE
 
-* Assign base points
+* Assign base points (ruleset-dependent)
 
 ### SCORE_BONUS
 
-* Assign bonus points
+* Assign bonus points (ruleset-dependent)
 
 ### LEADERBOARD
 
@@ -76,7 +76,18 @@ NEXT_ROUND
 
 ---
 
-## Disconnect / Reconnect
+## Scoring Rules (Ruleset-Dependent)
+
+Scoring logic is encapsulated in the Rules Engine and varies by ruleset. The
+**standard** ruleset implements the classic Dixit scoring:
+
+* **Base:** If all or none of the non-narrator players guess the narrator's card,
+  the narrator scores 0 and all other players score +2. Otherwise, the narrator
+  and all correct guessers score +3 each.
+* **Bonus:** Every player scores +1 per vote received on the card they played.
+
+Other rulesets (e.g. `high_risk`, `casual`) adjust these values. The game
+respects the ruleset selected at creation time and never changes it mid-game.
 
 The game never aborts, skips, or re-assigns a role because a player went
 offline. The policy is **stall**:

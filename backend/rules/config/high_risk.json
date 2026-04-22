@@ -1,0 +1,7 @@
+{
+  "correct_guess_points": 5,
+  "narrator_points": 5,
+  "fail_all_points": -2,
+  "fail_others_points": 3,
+  "vote_bonus": 2
+}

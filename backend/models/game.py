@@ -37,3 +37,7 @@ class Game(BaseModel):
     cards_on_table: list[int] = Field(default_factory=list)
     score_base_applied: bool = False
     score_bonus_applied: bool = False
+    # Rules engine selector. Selects which RulesEngine implementation
+    # to use for scoring and move validation. Defaults to "standard"
+    # (canonical Dixit rules).
+    ruleset: str = "standard"

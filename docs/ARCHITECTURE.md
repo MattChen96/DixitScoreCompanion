@@ -57,13 +57,34 @@ Communication:
 
 * Manage game state
 * Validate all actions
-* Enforce game rules
+* Enforce game rules via pluggable Rules Engine
 * Control game phases
 * Broadcast updates via WebSocket
 
 ### Important Rule
 
 The backend is the SINGLE SOURCE OF TRUTH.
+
+---
+
+## Rules Engine
+
+Scoring and advanced rule logic is abstracted into pluggable **RulesEngine**
+implementations. Each game selects its ruleset at creation time:
+
+* `standard` — classic Dixit scoring (default)
+* `high_risk` — higher rewards and penalties
+* `casual` — forgiving, beginner-friendly scoring
+
+The Rules Engine:
+
+* Owns scoring logic (`calculate_scores`)
+* Is stateless (no per-game mutation)
+* Is cached per ruleset name (efficient re-use)
+* Is loaded via `rules_loader.load_rules(name)`
+
+Games can be extended in the future with additional rulesets or house-rule
+variants without touching the core game flow.
 
 ---
 

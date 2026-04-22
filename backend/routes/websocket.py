@@ -25,6 +25,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from backend.models.constants import MAX_CARD_NUMBER, MIN_CARD_NUMBER
 from backend.models.game import Game
 from backend.services import game_service
 
@@ -63,14 +64,22 @@ def _detach_socket(game_id: str, ws: WebSocket) -> None:
 def game_wire(game: Game) -> dict[str, Any]:
     """Public, sanitized JSON projection of ``Game``.
 
-    ``recovery_token`` is stripped from every player so it never leaks via
-    broadcasts or REST responses. The token is only ever returned by
-    ``/join_game`` (top-level field), to the joining client.
+    Strips ``recovery_token`` from every player so it never leaks in
+    broadcasts. Augments the model dump with two computed fields that
+    let the frontend remain rule-agnostic:
+
+    * ``available_actions`` — list of action names currently valid for
+      this game state (computed by ``game_service.available_actions``).
+    * ``card_range`` — ``{min, max}`` for card number inputs, taken from
+      the domain constants so the frontend has no hardcoded bounds.
     """
-    return game.model_dump(
+    data = game.model_dump(
         mode="json",
         exclude={"players": {"__all__": {"recovery_token"}}},
     )
+    data["available_actions"] = game_service.available_actions(game)
+    data["card_range"] = {"min": MIN_CARD_NUMBER, "max": MAX_CARD_NUMBER}
+    return data
 
 
 async def _send_error(ws: WebSocket, detail: str) -> None:

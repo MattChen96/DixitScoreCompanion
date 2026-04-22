@@ -36,6 +36,10 @@ class JoinGameRequest(_Body):
     nickname: NicknameField
 
 
+class CreateGameRequest(_Body):
+    ruleset: str = Field(default="standard", min_length=1, max_length=32)
+
+
 class StartGameRequest(_Body):
     game_id: GameIdField
     player_id: PlayerIdField
@@ -93,9 +97,19 @@ def _next_phase_event(game: Game) -> str:
 # ---------------------------------------------------------------------------
 
 
+@router.get("/rulesets")
+def list_rulesets() -> list[dict[str, str]]:
+    from backend.rules.rules_loader import available_rulesets  # noqa: PLC0415
+
+    return [{"name": name} for name in available_rulesets()]
+
+
 @router.post("/create_game")
-def create_game() -> dict[str, Any]:
-    game = game_service.create_game()
+def create_game(body: CreateGameRequest = CreateGameRequest()) -> dict[str, Any]:
+    try:
+        game = game_service.create_game(ruleset=body.ruleset)
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
     return {"game_id": game.id}
 
 
