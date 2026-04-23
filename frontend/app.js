@@ -738,8 +738,8 @@
 
         var pills;
         if (isNarrator) {
-          var card = p.card_played != null ? String(p.card_played) : "—";
-          pills = '<span class="reveal-pill narrator-card">' + escapeHtml(card) + "</span>";
+          // Narrator's card is not revealed until REVEAL_NARRATOR.
+          pills = '<span class="muted">—</span>';
         } else {
           var votes = p.votes || [];
           if (votes.length === 0) {
