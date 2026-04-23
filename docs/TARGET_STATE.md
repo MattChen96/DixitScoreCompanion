@@ -5,6 +5,21 @@ planning** — a developer or AI tool should be able to implement the
 features below without guessing. For what actually runs today see
 `CURRENT_STATE.md`.
 
+### Status relative to the repository today
+
+**Already implemented** (this document is partly historical; the code has
+caught up in these areas): multi-vote with `Player.votes` and
+`Game.votes_per_player` (1 or 2); VOTE_PREVIEW client UI; votes editable
+until the host advances (no `votes_locked` / `lock_votes`); REVEAL_VOTES list
+UI; per-round `last_base_delta` / `last_bonus_delta` with progressive
+`+Δ` panels in `SCORE_BASE` / `SCORE_BONUS`; narrator must `confirm_narrator`
+before `SELECT_NARRATOR → PLAY_CARDS`. For authoritative behaviour use
+`CURRENT_STATE.md` and `API_SPECS.md`.
+
+**Optional future polish** (not required to match the spec below): a dedicated
+`Game.scoring_step` field — the client currently uses `phase` and `last_*_delta`
+instead.
+
 ---
 
 ## 1. Game flow (target)
@@ -42,22 +57,16 @@ See `GAME_FLOW.md` for the full phase/transition/actor matrix.
 ## 2. Voting system (target)
 
 * Each non-narrator player can cast **1 or 2 votes** per round. The
-  exact number is determined by game configuration (player count and/or
-  ruleset). The server is the authority: `Player.votes` is a list of
-  card numbers; `Game.votes_per_player` (or an equivalent rule-driven
-  value) caps its length.
-* **Votes are editable** until the host locks them. A player may add,
-  remove, or replace entries in `Player.votes` freely while
-  `Game.votes_locked == false`.
-* The **host controls vote locking** via a dedicated action
-  (`lock_votes`). Once locked:
-  * `Game.votes_locked = true`
-  * further `submit_vote` / `update_vote` calls are rejected
-  * the host can advance `VOTE → REVEAL_VOTES`
-  * the lock is cleared during round reset (`NEXT_ROUND → SELECT_NARRATOR`)
-* A player **cannot vote their own card** (already enforced today and
-  kept as-is — the "own card" slot is rendered but non-selectable).
-* A player **cannot vote the same card twice** even when 2 votes are
+  server is the authority: `Player.votes` is a list of card numbers;
+  `Game.votes_per_player` (1 or 2, set at `create_game`) caps its length.
+* **Votes are editable** for the whole `VOTE` phase. A player may add,
+  remove, or replace entries via `submit_vote` / `update_vote` until
+  the **host** advances to `REVEAL_VOTES`. Votes become final on that
+  transition — there is no separate host lock action in the current
+  implementation. See `CURRENT_STATE.md` §2.
+* A player **cannot vote their own card** (the "own card" slot is
+  rendered but non-selectable).
+* A player **cannot vote the same card twice** when 2 votes are
   allowed — the two votes must be distinct card numbers.
 * **Before confirmation**, the selected cards are shown in a preview
   (see §3).
@@ -73,12 +82,12 @@ After a player picks one or two card numbers, the app enters the
   number tiles, bigger than the vote-grid buttons).
 * The UI supports displaying **one or two** selected cards side by side.
 * Two actions are offered:
-  * **Confirm** — commits the selection by calling
-    `POST /submit_vote` (first confirmation) or `POST /update_vote`
-    (subsequent edits) and returns the player to the waiting screen.
+  * **Confirm** — typically commits via `POST /update_vote` (atomic list);
+    `POST /submit_vote` can add one card from the grid. The player
+    then sees the submitted-vote view until the host advances.
   * **Change** — returns to the vote grid without submitting.
-* As long as votes are not locked, the player can re-enter the preview
-  from the waiting screen to change their selection.
+* While the phase is still `VOTE`, the player can re-enter the preview
+  from the submitted screen to change their selection.
 
 This state is entirely client-side; no server event is required to
 enter or leave it.
@@ -123,9 +132,9 @@ displays **only the deltas**:
   omitted or dimmed.
 * After entering `SCORE_BONUS` (next host advance), the app renders a
   **bonus-points panel** in the same format.
-* The `scoring_step` field on `Game` (`"base"` | `"bonus"` | `null`)
-  tells the UI which panel to draw. The server sets this alongside the
-  phase transition.
+* The UI uses the **phase** (`SCORE_BASE` vs `SCORE_BONUS`) plus
+  `last_base_delta` / `last_bonus_delta` (no `scoring_step` field on
+  `Game` today).
 * Both panels show **only numbers**. No explanation of the scoring
   rules is shown in the UI (no "because all/none guessed", no "+1 per
   vote received"). The help, if any, lives outside the gameplay
@@ -135,17 +144,13 @@ displays **only the deltas**:
 
 ### 5.3 Required wire data
 
-To compute the delta UI the server must expose, alongside the full game
-state:
+**Implemented:** `last_base_delta` and `last_bonus_delta` on `Game`,
+populated by the rules engine and cleared on round reset. The
+`scores_updated` WebSocket event carries the updated `game` blob.
 
-* `Game.scoring_step: "base" | "bonus" | null`
-* per-player **delta** for the step that was just applied, either as:
-  * a dedicated projection field (e.g. `last_base_delta`,
-    `last_bonus_delta`), or
-  * a `scoring_events` stream on the `scores_updated` WebSocket event.
-
-Either approach is acceptable as long as the frontend stays
-rule-agnostic.
+**Optional later:** a `scoring_step` field or `scoring_events` stream
+if a future client needs an extra discriminator beyond `phase` — not
+present in the current model.
 
 ---
 
@@ -183,17 +188,20 @@ These remain non-negotiable (see `PROJECT_RULES.md` and
 
 ---
 
-## 8. Summary of new concepts introduced vs. current state
+## 8. Summary: planning document vs. repository (2026)
 
-| Concept                 | Current        | Target                                     |
-|-------------------------|----------------|--------------------------------------------|
-| Votes per player        | 1 (fixed)      | 1 or 2 (rule-/config-driven, server cap)   |
-| Vote mutability         | Immutable      | Editable until host locks                  |
-| Vote lock               | Does not exist | Host action `lock_votes`; flag `Game.votes_locked` |
-| Vote preview            | None           | Required UI state before `submit_vote` / `update_vote` |
-| Reveal votes            | No UI          | Shows who voted which card(s)              |
-| Scoring UI              | Leaderboard totals | Progressive `+Δ` panels, base then bonus |
-| Scoring step marker     | None           | `Game.scoring_step`                        |
+This table is retained for **history**; many rows are **done** in code.
+See `CURRENT_STATE.md` for the live matrix.
+
+| Concept                 | Notes (today) |
+|-------------------------|---------------|
+| Votes per player        | **Done** — `Game.votes_per_player` 1 or 2 |
+| Vote mutability         | **Done** — editable until host advances from `VOTE` |
+| Vote lock / `lock_votes` | **Not implemented** (superseded by host-advance finality) |
+| Vote preview            | **Done** — client `VOTE_PREVIEW` |
+| Reveal votes            | **Done** — per-player list in `REVEAL_VOTES` |
+| Scoring UI              | **Done** — `+Δ` base/bonus from `last_*_delta` |
+| Scoring step marker     | **Not in model** — use `phase` + deltas |
 
 All additions must be implemented **without** breaking the reconnect
 flow, the heartbeat / stall policy, or the rules-engine abstraction.

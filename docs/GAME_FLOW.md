@@ -60,12 +60,16 @@ Every `Game` starts in `LOBBY` and loops from `NEXT_ROUND` back to
 | `SCORE_BASE`      | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **bonus** scores via rules engine) | `SCORE_BONUS`    |
 | `SCORE_BONUS`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `LEADERBOARD`    |
 | `LEADERBOARD`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `NEXT_ROUND`     |
-| `NEXT_ROUND`      | —                                                | `POST /next_phase`                             | `/next_phase` (server resets round data: `card_played`, `votes`, `cards_on_table`, scoring flags) | `SELECT_NARRATOR` |
+| `NEXT_ROUND`      | —                                                | `POST /next_phase`                             | `/next_phase` (round reset: see §7) | `SELECT_NARRATOR` |
 
 Rules:
 
-* **Only the host** may trigger phase transitions (`host_id` is set to
-  the first joiner and never changes).
+* **Only the host** may trigger phase transitions via `POST /next_phase`
+  (and host-only endpoints `start_game`, `select_narrator`). The
+  **designated narrator** must call `confirm_narrator` in
+  `SELECT_NARRATOR` before the host can advance to `PLAY_CARDS` — that
+  call is not a phase transition (`host_id` is set to the first joiner
+  and never changes).
 * **Players** may only call `submit_card` / `submit_vote` /
   `update_vote` / `confirm_narrator` during the corresponding phase;
   every other call in a wrong phase is rejected.
@@ -90,9 +94,9 @@ Entered when a player taps a card in the vote grid.
 * Shows the selected card(s) in large format.
 * Supports 1 or 2 selected cards (target).
 * Actions:
-  * **Confirm** → `POST /submit_vote` (first) or `POST /update_vote`
-    (subsequent edits, target only) → exits VOTE_PREVIEW back to the
-    waiting screen.
+  * **Confirm** → `POST /update_vote` (replaces the full vote list) →
+    exits VOTE_PREVIEW to the submitted-vote view; `POST /submit_vote`
+    can still append one card at a time from the grid without preview.
   * **Change** → exits VOTE_PREVIEW back to the vote grid with the
     current selection remembered.
 * Does **not** change the server phase. If the host advances while a
@@ -106,25 +110,20 @@ Entered when a player taps a card in the vote grid.
 > can re-enter the preview from the waiting screen at any time to change
 > their selection.
 
-### 4.2 Waiting panels
+### 4.2 Phase-specific UI (current `frontend/app.js`)
 
-Several server phases render the same UI shell in the current
-implementation (`REVEAL_VOTES`, `REVEAL_NARRATOR`, `SCORE_BASE`,
-`SCORE_BONUS`, `NEXT_ROUND`). In the target state, each becomes a
-distinct rendering:
+| Server phase        | UI rendering (implemented) |
+|---------------------|------------------------------|
+| `REVEAL_VOTES`      | `renderRevealVotes` — per-player vote list; narrator’s card is not shown as a vote. |
+| `REVEAL_NARRATOR`   | `renderHostContinue` — generic "host advances when ready" (physical table reveal). |
+| `SCORE_BASE`        | `renderScoring("base")` — rows from `Game.last_base_delta`.  |
+| `SCORE_BONUS`       | `renderScoring("bonus")` — rows from `Game.last_bonus_delta`.  |
+| `LEADERBOARD`       | `renderLeaderboard` — sorted cumulative `Player.score` totals.  |
+| `NEXT_ROUND`        | `renderHostContinue` — generic "host advances when ready".   |
 
-| Server phase      | UI rendering (target)                                |
-|-------------------|------------------------------------------------------|
-| `REVEAL_VOTES`    | Per-player vote list (who voted which card(s))       |
-| `REVEAL_NARRATOR` | Highlight of the narrator's card                     |
-| `SCORE_BASE`      | Progressive **base** deltas (`"Player A +3"` lines)  |
-| `SCORE_BONUS`     | Progressive **bonus** deltas                         |
-| `LEADERBOARD`     | Sorted cumulative totals                             |
-| `NEXT_ROUND`      | Brief "next round starting" panel                    |
-
-The `Game.scoring_step` field (`"base"` | `"bonus"` | `null`) is the
-target-state signal that tells the client whether the delta panel
-should render base or bonus information.
+The client does **not** use a `scoring_step` field on `Game` — it uses
+`game.phase` (`SCORE_BASE` vs `SCORE_BONUS`) to pick the panel and the
+relevant `last_*_delta` map.
 
 ---
 

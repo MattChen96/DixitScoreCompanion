@@ -41,8 +41,10 @@ game creation.
 * **Multiplayer, session-based.** Every game is an isolated in-memory
   room identified by a short `game_id`. No cross-game data.
 * **Host-controlled phases.** The game never advances automatically on
-  a timer. The host (first player to join) clicks to move the round
-  forward. Players only act inside the phases that ask them to.
+  a timer. The host (first player to join) moves most steps forward; the
+  selected narrator must also **confirm** their role in
+  `SELECT_NARRATOR` before play can start. Other players only act in
+  phases that ask them to.
 * **Backend is the single source of truth.** The server owns phase,
   scores, votes, and the list of legal actions. The frontend renders
   whatever the server sends and never computes rules locally.
@@ -80,7 +82,8 @@ game creation.
 
 * REST for actions that the client initiates
   (`/create_game`, `/join_game`, `/start_game`, `/next_phase`,
-  `/select_narrator`, `/submit_card`, `/submit_vote`).
+  `/select_narrator`, `/confirm_narrator`, `/submit_card`, `/submit_vote`,
+  `/update_vote`).
 * WebSocket (`/ws/{game_id}`) for push:
   * Every state-changing REST call triggers a broadcast of the full
     sanitized game object to every socket in the room.
@@ -88,7 +91,7 @@ game creation.
     silent players to `connected = false` after ~45 s.
   * Reconnect: the client replays its stored `recovery_token` on socket
     open and resumes exactly where it left off (phase, score,
-    `card_played`, vote).
+    `card_played`, `votes`).
 
 The full protocol is documented in `API_SPECS.md`.
 

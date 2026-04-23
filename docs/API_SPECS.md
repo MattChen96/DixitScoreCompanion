@@ -21,8 +21,10 @@ domain errors, and `422` for Pydantic validation failures.
 
 Every successful response whose payload contains `game` sends the
 **sanitized** projection (`backend/routes/websocket.py:game_wire`) —
-`recovery_token` is always stripped, and the projection is augmented
-with `available_actions` and `card_range`.
+`recovery_token` is always stripped, all other `Game` fields (including
+`last_base_delta`, `last_bonus_delta`, `narrator_confirmed`, etc.) are
+serialized, and the projection is augmented with `available_actions` and
+`card_range` (the only two fields that are not on the Pydantic `Game` model).
 
 ### 1.1 Discovery
 
@@ -37,10 +39,11 @@ with `available_actions` and `card_range`.
 
 | Method | Path              | Status  | Body                                        | Returns                                   |
 |--------|-------------------|---------|---------------------------------------------|-------------------------------------------|
-| POST   | `/create_game`    | current | `{ruleset?: str}` (default `"standard"`)   | `{"game_id": str}` — fails `400` on unknown `ruleset` |
+| POST   | `/create_game`    | current | `{ruleset?: str, votes_per_player?: int}` (defaults `"standard"`, `1`; `votes_per_player` 1 or 2) | `{"game_id": str}` — fails `400` on unknown `ruleset` |
 | POST   | `/join_game`      | current | `{game_id, nickname}`                       | `{player_id, game_id, recovery_token, game}` — the **only** response carrying `recovery_token` |
 | POST   | `/start_game`     | current | `{game_id, player_id}` (host only)          | `{game}` — requires ≥ 3 players, transitions `LOBBY → SELECT_NARRATOR` |
-| POST   | `/select_narrator`| current | `{game_id, player_id, narrator_id}` (host)  | `{game}` — transitions `SELECT_NARRATOR → PLAY_CARDS` |
+| POST   | `/select_narrator`| current | `{game_id, player_id, narrator_id}` (host)  | `{game}` — **phase stays** `SELECT_NARRATOR`; sets `narrator_id`, `narrator_confirmed = false`. Room WS: `narrator_selected` |
+| POST   | `/confirm_narrator` | current | `{game_id, player_id}` (narrator only)   | `{game}` — sets `narrator_confirmed = true`. Room WS: `narrator_confirmed` |
 | POST   | `/next_phase`     | current | `{game_id, player_id}` (host only)          | `{game}` — generic advance; see §1.5 for side-effects |
 
 ### 1.3 Player actions
@@ -75,14 +78,17 @@ Validation (Pydantic):
 |------------------------------------|------------------------------------------------------------------------------------------------------|--------------------------------|
 | `PLAY_CARDS → VOTE`                | Defence-in-depth duplicate-card check; if duplicates are found, the round is reset (same as `/submit_card`). | `phase_changed` or `game_error`|
 | `VOTE → REVEAL_VOTES`              | Requires all active non-narrators to have voted at least 1 card. | `phase_changed`                |
-| `REVEAL_NARRATOR → SCORE_BASE`     | `rules_engine.calculate_scores(game)` applies base scoring; `score_base_applied = true`; **target**: `scoring_step = "base"` and `last_base_delta` computed. | `scores_updated`               |
-| `SCORE_BASE → SCORE_BONUS`         | `rules_engine.calculate_scores(game)` applies bonus scoring; `score_bonus_applied = true`; **target**: `scoring_step = "bonus"` and `last_bonus_delta` computed. | `scores_updated`               |
+| `SELECT_NARRATOR → PLAY_CARDS`     | Requires `narrator_id` set, `narrator_confirmed == true`, and the host. | `phase_changed`                |
+| `REVEAL_NARRATOR → SCORE_BASE`     | `rules_engine.calculate_scores(game)` applies base scoring; `score_base_applied = true`; `last_base_delta` populated. | `scores_updated`               |
+| `SCORE_BASE → SCORE_BONUS`         | `rules_engine.calculate_scores(game)` applies bonus scoring; `score_bonus_applied = true`; `last_bonus_delta` populated. | `scores_updated`               |
 | `SCORE_BONUS → LEADERBOARD`        | —                                                                                                    | `scores_updated`               |
-| `NEXT_ROUND → SELECT_NARRATOR`     | Round reset: clears `card_played`, `votes`, `cards_on_table`, scoring flags. `scoring_step` (target) is also cleared when implemented. Scores are preserved. | `phase_changed`                |
+| `NEXT_ROUND → SELECT_NARRATOR`     | Round reset: clears `card_played`, `votes`, `cards_on_table`, scoring flags, `last_base_delta` / `last_bonus_delta`, `narrator_id`, `narrator_confirmed`. Scores are preserved. | `phase_changed`                |
 | Any other transition               | —                                                                                                    | `phase_changed`                |
 
-`LOBBY → SELECT_NARRATOR` and `SELECT_NARRATOR → PLAY_CARDS` cannot be
-advanced with `/next_phase`; use `/start_game` and `/select_narrator`.
+* `LOBBY → SELECT_NARRATOR` uses only `POST /start_game` (not `/next_phase`).
+* `SELECT_NARRATOR → PLAY_CARDS` uses `POST /next_phase` **after** the
+  host has called `POST /select_narrator` and the chosen narrator has
+  called `POST /confirm_narrator`.
 
 ---
 
@@ -98,7 +104,7 @@ If the game does not exist, the server sends
 
 Every server message is a JSON object with an `event` field. Messages
 that carry game state also include a sanitized `game` field
-(`game_wire` projection; see `DATA_MODEL.md` §3):
+(`game_wire` projection; see `DATA_MODEL.md` §3 for injected fields):
 
 ```json
 { "event": "phase_changed", "game": { ... } }
@@ -120,6 +126,7 @@ Errors use:
 | `submit_card`   | current | `{player_id, card_number}`                 | Same effect as `POST /submit_card` (including duplicate reset + `game_error`).                         |
 | `submit_vote`   | current | `{player_id, card_number}`                 | Same effect as `POST /submit_vote`.                                                                    |
 | `update_vote`   | current | `{player_id, card_numbers: list[int]}`    | Same effect as `POST /update_vote`.                                                                    |
+| `confirm_narrator` | current | `{player_id}`                            | Same effect as `POST /confirm_narrator`.                                                               |
 | `reconnect`     | current | `{player_id, recovery_token}`              | On success: per-socket `game_state` + room `player_reconnected`. On failure: `error` / `recovery_failed` + close `1008`. |
 | `ping`          | current | `{player_id}`                              | Server replies `pong` (per-socket) and refreshes `player.last_seen`. Cadence: ~15 s from the client.    |
 
@@ -137,10 +144,12 @@ Notes:
 |------------------------|---------|---------------------------------------------------------------------------|-------------------------------------------------------|
 | `game_state`           | current | `{event, game}`                                                           | Sent to one socket on connect, on `join_room`, and on successful `reconnect`. |
 | `player_joined`        | current | `{event, game}`                                                           | Room-wide after `POST /join_game`.                    |
+| `narrator_selected`    | current | `{event, game}`                                                           | Room-wide after `POST /select_narrator` (phase still `SELECT_NARRATOR`). |
+| `narrator_confirmed`   | current | `{event, game}`                                                           | Room-wide after `POST /confirm_narrator`.            |
 | `phase_changed`        | current | `{event, game}`                                                           | Room-wide after a non-scoring phase transition.       |
 | `card_submitted`       | current | `{event, game}`                                                           | Room-wide after a card is submitted (REST or WS).     |
 | `vote_submitted`       | current | `{event, game}`                                                           | Room-wide after a vote is submitted (`submit_vote`) or updated (`update_vote`). |
-| `scores_updated`       | current | `{event, game}`                                                           | Room-wide after entering `SCORE_BASE`, `SCORE_BONUS`, or `LEADERBOARD`. In the target state, `game.scoring_step` (`"base"` \| `"bonus"`) and `game.last_base_delta` / `last_bonus_delta` drive the progressive-scoring UI. |
+| `scores_updated`       | current | `{event, game}`                                                           | Room-wide after entering `SCORE_BASE`, `SCORE_BONUS`, or `LEADERBOARD`. Progressive scoring UIs use `game.phase` with `last_base_delta` / `last_bonus_delta` (and cumulative `players[].score` on `LEADERBOARD`). There is no `scoring_step` field. |
 | `game_error`           | current | `{event: "game_error", error: <code>, message: <string>, game: <Game>}`    | Room-wide gameplay errors. Current codes: `duplicate_cards`. |
 | `player_reconnected`   | current | `{event, game}`                                                           | Room-wide after a successful `reconnect`.             |
 | `player_disconnected`  | current | `{event, game}`                                                           | Room-wide when the heartbeat task flips one or more players to `connected=false`. |
@@ -161,7 +170,12 @@ Future `game_error` codes should follow the same shape.
 
 * Every action validates the current phase; out-of-phase calls are
   rejected.
-* Only the host can trigger phase transitions.
+* **Host** may call `POST /next_phase`, `POST /start_game`, and
+  `POST /select_narrator`. The **designated narrator** may call
+  `POST /confirm_narrator` (or WebSocket `confirm_narrator`) in
+  `SELECT_NARRATOR` — that action does not change phase; it is required
+  before the host can advance `SELECT_NARRATOR → PLAY_CARDS` with
+  `/next_phase`.
 * `recovery_token` is never included in any broadcast or in any REST
   response apart from `/join_game`.
 * The `game` field on every outbound message is the **sanitized**

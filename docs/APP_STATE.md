@@ -96,7 +96,7 @@ broadcasts.
     the future.
 * Every ~15 s the client sends `{event: "ping", data: {player_id}}`; the server
   replies `{event: "pong"}` and refreshes `player.last_seen`. Any inbound
-  game action (`submit_card`, `submit_vote`, `reconnect`) has the same
+  game action (`submit_card`, `submit_vote`, `update_vote`, `confirm_narrator`, `reconnect`, etc.) has the same
   liveness effect.
 * The heartbeat task (`backend/services/heartbeat.py`) scans every
   `HEARTBEAT_SCAN_S = 10` s. Players silent for more than
@@ -138,11 +138,13 @@ listed there is reachable; no others are allowed.
 |------------------|----------|---------------------------------------------------------------------|
 | LOBBY            | Anyone   | `POST /join_game` (first joiner becomes host)                       |
 | LOBBY            | Host     | `POST /start_game` (≥ 3 players required) → SELECT_NARRATOR         |
-| SELECT_NARRATOR  | Host     | `POST /select_narrator` → PLAY_CARDS                                |
+| SELECT_NARRATOR  | Host     | `POST /select_narrator` — sets `narrator_id`, `narrator_confirmed = false`; phase **stays** `SELECT_NARRATOR`. Room WS: `narrator_selected` |
+| SELECT_NARRATOR  | Narrator | `POST /confirm_narrator` (or WS `confirm_narrator`) — sets `narrator_confirmed = true`. Room WS: `narrator_confirmed` |
+| SELECT_NARRATOR  | Host     | `POST /next_phase` → `PLAY_CARDS` only if `narrator_id` is set and `narrator_confirmed == true` |
 | PLAY_CARDS       | Players  | `POST /submit_card` (or WS `submit_card`); card numbers must be unique. Duplicate → round reset + `game_error` broadcast |
-| PLAY_CARDS       | Host     | `POST /next_phase` → VOTE. Scoring validation ignores disconnected players; the **narrator**, however, must have a card on the table (stall policy) |
-| VOTE             | Non-narr.| `POST /submit_vote` (or WS `submit_vote`); narrator may not vote    |
-| VOTE             | Host     | `POST /next_phase` → REVEAL_VOTES. "All voted" is evaluated against **active** (connected) players only |
+| PLAY_CARDS       | Host     | `POST /next_phase` → VOTE. `next_phase` in `available_actions` requires all **active** players to have played; the **narrator** must have a card on the table (stall policy) |
+| VOTE             | Non-narr.| `POST /submit_vote` / `POST /update_vote` (or WS equivalents); narrator may not vote    |
+| VOTE             | Host     | `POST /next_phase` → REVEAL_VOTES. Gated so every **active** non-narrator has ≥1 vote (server exposes `next_phase` in `available_actions` when satisfied) |
 | REVEAL_VOTES     | Host     | `POST /next_phase` → REVEAL_NARRATOR                                |
 | REVEAL_NARRATOR  | Host     | `POST /next_phase` → SCORE_BASE (server applies base scores)        |
 | SCORE_BASE       | Host     | `POST /next_phase` → SCORE_BONUS (server applies bonus scores)      |
@@ -150,9 +152,10 @@ listed there is reachable; no others are allowed.
 | LEADERBOARD      | Host     | `POST /next_phase` → NEXT_ROUND                                     |
 | NEXT_ROUND       | Host     | `POST /next_phase` → SELECT_NARRATOR (server resets round data)     |
 
-`/next_phase` is the **only** generic advance. `LOBBY` and `SELECT_NARRATOR` cannot
-be advanced this way — they require `/start_game` and `/select_narrator` so the
-host’s explicit input is captured.
+`/next_phase` is the generic advance for all phases **except** `LOBBY`, which
+uses only `POST /start_game`. In `SELECT_NARRATOR`, the host still uses
+`POST /select_narrator` to pick the narrator, and `POST /next_phase` to reach
+`PLAY_CARDS` **after** the narrator has `POST /confirm_narrator`.
 
 ### 2.3 Scoring (ruleset-dependent; server-only)
 
@@ -164,22 +167,23 @@ exclusively via `rules_engine.calculate_scores(game)`.
 * **`standard`** (default) — classic Dixit scoring from official rules.
   Config: `backend/rules/config/standard.json`
   * Base: narrator=0 all|none guessed (others +2), else narrator +3 and correct +3
-  * Bonus: +1 per vote received
+  * Bonus: +1 per vote received on **non-narrator** players’ cards only (narrator excluded)
 
 * **`high_risk`** — amplified rewards for success, penalties for failure.
   Config: `backend/rules/config/high_risk.json`
   * Base: narrator=-2 if all|none (others +3), else narrator +5 and correct +5
-  * Bonus: +2 per vote received
+  * Bonus: +2 per vote on **non-narrator** players’ cards only (narrator excluded)
 
 * **`casual`** — forgiving, beginner-friendly scoring.
   Config: `backend/rules/config/casual.json`
   * Base: narrator=+1 if all|none (others +2), else narrator +2 and correct +2
-  * Bonus: +1 per vote received
+  * Bonus: +1 per vote on **non-narrator** players’ cards only (narrator excluded)
 
 #### Engine Architecture
 
-Each game picks its ruleset at creation time (`POST /create_game {ruleset}`,
-stored on `Game.ruleset`, immutable afterwards).
+Each game picks its ruleset and vote cap at creation time
+(`POST /create_game {ruleset?, votes_per_player?}`), stored on `Game.ruleset`
+and `Game.votes_per_player` (1 or 2), immutable afterwards.
 
 `game_service._engine_for(game)` resolves the ruleset name via
 `rules_loader.load_rules(...)` and caches one stateless engine instance per
@@ -209,15 +213,18 @@ Base scoring (`phase == SCORE_BASE`):
 
 Bonus scoring (`phase == SCORE_BONUS`):
 
-* For every player (including the narrator), add **+1 per vote received** on the
-  card they played this round.
+* For every **non-narrator** player, add the ruleset’s **vote bonus** per vote
+  received on the card they played this round. The **narrator is excluded** —
+  they do not receive bonus points for votes on their card.
 * Requires `score_base_applied == True`.
 
 Round reset (`_reset_round_after_next`, in `game_service`):
 
 * Triggered when `/next_phase` advances `NEXT_ROUND → SELECT_NARRATOR`.
-* Clears every `Player.card_played`, `Player.vote`, `Game.cards_on_table`, and
-  both score-applied flags. Player **scores are preserved** across rounds.
+* Clears every `Player.card_played`, `Player.votes`, `Game.cards_on_table`,
+  `Game.last_base_delta`, `Game.last_bonus_delta`, both score-applied flags,
+  `Game.narrator_id`, and `Game.narrator_confirmed`. Player **scores** and
+  `Game.votes_per_player` **are preserved** across rounds.
 * Lives in `game_service` (not the rules engine) because it's round lifecycle,
   not rule-dependent logic.
 
@@ -236,8 +243,10 @@ adds the following concrete rules; none of them contradict the spec:
   `cards_on_table` is cleared, the phase stays `PLAY_CARDS`, and the room is
   notified with `game_error` / `duplicate_cards`. `next_phase` carries the same
   guard as a defence-in-depth check before the PLAY_CARDS → VOTE transition.
-* `LOBBY → ...` and `SELECT_NARRATOR → ...` cannot be advanced via `/next_phase`;
-  use `/start_game` and `/select_narrator` instead.
+* `LOBBY → SELECT_NARRATOR` cannot use `/next_phase`; it requires `/start_game`.
+* `SELECT_NARRATOR → PLAY_CARDS` **does** use `/next_phase` (host) after
+  `/select_narrator` and `/confirm_narrator`; it does **not** use
+  `/select_narrator` alone to change phase.
 
 ---
 
@@ -251,13 +260,15 @@ else (Pydantic validation errors return `422` automatically).
 
 | Method | Path              | Body                                                | Returns                                                        |
 |--------|-------------------|-----------------------------------------------------|----------------------------------------------------------------|
-| POST   | `/create_game`    | `{ruleset?}` (optional, default `"standard"`)      | `{"game_id": str}`                                             |
+| POST   | `/create_game`    | `{ruleset?, votes_per_player?}` (defaults `"standard"`, `1`) | `{"game_id": str}`                                             |
 | POST   | `/join_game`      | `{game_id, nickname}`                               | `{player_id, game_id, recovery_token, game}` + WS `player_joined` broadcast |
 | POST   | `/start_game`     | `{game_id, player_id}`                              | `{game}` + WS `phase_changed`                                  |
 | POST   | `/next_phase`     | `{game_id, player_id}`                              | `{game}` + WS `phase_changed` / `scores_updated` / `game_error` (duplicate guard) |
-| POST   | `/select_narrator`| `{game_id, player_id, narrator_id}`                 | `{game}` + WS `phase_changed`                                  |
+| POST   | `/select_narrator`| `{game_id, player_id, narrator_id}`                 | `{game}` + WS `narrator_selected` (phase still `SELECT_NARRATOR`) |
+| POST   | `/confirm_narrator` | `{game_id, player_id}` (narrator)                | `{game}` + WS `narrator_confirmed`                             |
 | POST   | `/submit_card`    | `{game_id, player_id, card_number}`                 | `{game}` + WS `card_submitted`, **or** on duplicate: `{game}` (reset state) + WS `game_error` |
 | POST   | `/submit_vote`    | `{game_id, player_id, card_number}`                 | `{game}` + WS `vote_submitted`                                 |
+| POST   | `/update_vote`    | `{game_id, player_id, card_numbers}` (1–2 distinct cards) | `{game}` + WS `vote_submitted`                                 |
 
 `/next_phase` emits `scores_updated` when the resulting phase is `SCORE_BASE`,
 `SCORE_BONUS`, or `LEADERBOARD`; otherwise `phase_changed`. If the host tries
@@ -276,6 +287,7 @@ Validation (Pydantic):
 * `game_id`, `player_id`, `narrator_id`: 1–32 chars, hex `[A-Fa-f0-9]`.
 * `nickname`: 1–40 chars (whitespace stripped).
 * `card_number`: integer in `[1, 84]`.
+* `card_numbers`: 1–2 distinct integers in `[1, 84]` (`/update_vote`).
 * All bodies use `extra="forbid"` — unknown fields are rejected.
 
 `recovery_token` is returned **only** here and stored by the client in
@@ -303,10 +315,14 @@ except `error` which is `{"event": "error", "detail": "<message>"}`.
 | C → S     | `join_room`           | `{}` (server replies with `game_state`)                                                  |
 | C → S     | `submit_card`         | `{player_id, card_number}` — same effect as REST                                         |
 | C → S     | `submit_vote`         | `{player_id, card_number}` — same effect as REST                                         |
+| C → S     | `update_vote`         | `{player_id, card_numbers}` — same effect as REST                                        |
+| C → S     | `confirm_narrator`    | `{player_id}` — same effect as REST `POST /confirm_narrator`                            |
 | C → S     | `reconnect`           | `{player_id, recovery_token}` — per-socket `game_state` on success + `player_reconnected` broadcast; `error`/`recovery_failed` + close(1008) on failure |
 | C → S     | `ping`                | `{player_id}` — server replies `pong` and refreshes `player.last_seen`                    |
 | S → C     | `game_state`          | Sanitized game (sent on connect, on `join_room`, and to the reconnecting socket)          |
 | S → C     | `player_joined`       | Sanitized game (after `/join_game`)                                                       |
+| S → C     | `narrator_selected`   | Sanitized game (after `POST /select_narrator`)                                            |
+| S → C     | `narrator_confirmed`  | Sanitized game (after `POST /confirm_narrator`)                                           |
 | S → C     | `phase_changed`       | Sanitized game (after non-scoring transitions)                                            |
 | S → C     | `card_submitted`      | Sanitized game (after a card is submitted via REST or WS)                                 |
 | S → C     | `vote_submitted`      | Sanitized game (after a vote is submitted via REST or WS)                                 |
@@ -317,10 +333,10 @@ except `error` which is `{"event": "error", "detail": "<message>"}`.
 | S → C     | `pong`                | `{}` — per-socket reply to `ping`; no `game` payload, no render                           |
 | S → C     | `error`               | `{detail}` — sent only to the offending socket. `detail: "recovery_failed"` is followed by close(1008) |
 
-The frontend currently uses `join_room` only; it submits cards and votes via
-REST. The WS `submit_card` / `submit_vote` handlers exist as required by
-`API_SPECS.md` and are functionally equivalent to the REST endpoints (including
-the duplicate-card reset + `game_error` broadcast).
+The frontend uses `reconnect` and `join_room` and performs actions via
+REST. WebSocket `submit_card`, `submit_vote`, `update_vote`, and
+`confirm_narrator` exist for parity and match the REST routes (see
+`API_SPECS.md`).
 
 Defined `game_error` codes:
 
@@ -342,10 +358,10 @@ Defined in `backend/models/game.py` using Pydantic v2 (`extra="forbid"`).
 | `nickname`    | `str`       | —       | 1–40 chars; trimmed at request boundary            |
 | `score`       | `int`       | `0`     | Cumulative across rounds; never reset              |
 | `card_played` | `int \| None` | `None` | Set in PLAY_CARDS, cleared on round reset. **Must be unique across players** during a PLAY_CARDS round; a collision triggers `DuplicateCardError` and resets the round. |
-| `vote`        | `int \| None` | `None` | Set in VOTE, cleared on round reset; null for narrator |
+| `votes`       | `list[int]`   | `[]`   | Card numbers voted this round; length capped by `Game.votes_per_player`. Cleared on round reset; empty for narrator. |
 | `recovery_token` | `str`     | uuid4 hex | Server-generated. Returned **only** by `/join_game`; stripped from every broadcast and every other REST response by `game_wire`. |
 | `connected`   | `bool`      | `True`  | Liveness flag. Flipped to `False` by the heartbeat scan after ~45 s of silence; flipped back to `True` on any inbound event. |
-| `last_seen`   | `float`     | `time.time()` | Unix timestamp (seconds). Updated by `ping`, `reconnect`, `submit_card`, and `submit_vote`. |
+| `last_seen`   | `float`     | `time.time()` | Unix timestamp (seconds). Updated by `ping`, `reconnect`, `submit_card`, `submit_vote`, `update_vote`, `confirm_narrator`, etc. |
 
 ### 4.2 `Game`
 
@@ -354,13 +370,20 @@ Defined in `backend/models/game.py` using Pydantic v2 (`extra="forbid"`).
 | `id`                  | `str`            | —             | 8-char uppercase hex (uuid4 prefix)                  |
 | `players`             | `list[Player]`   | `[]`          | Insertion order = join order                         |
 | `host_id`             | `str \| None`    | `None`        | Set to first joiner; never changes                   |
-| `narrator_id`         | `str \| None`    | `None`        | Set in SELECT_NARRATOR; persists until next round    |
+| `narrator_id`         | `str \| None`    | `None`        | Set in SELECT_NARRATOR; cleared on round reset      |
+| `narrator_confirmed`  | `bool`           | `False`       | Set `True` by narrator’s `POST /confirm_narrator`; cleared on round reset |
 | `phase`               | `GamePhase`      | `LOBBY`       | One of the ten phases enumerated above               |
 | `cards_on_table`      | `list[int]`      | `[]`          | Submission order; cleared on round reset             |
-| `score_base_applied`  | `bool`           | `False`       | Idempotency guard for base scoring in `StandardDixitRules` |
-| `score_bonus_applied` | `bool`           | `False`       | Idempotency guard for bonus scoring in `StandardDixitRules` |
+| `ruleset`             | `str`            | `"standard"`  | Chosen at `create_game`; immutable                   |
+| `votes_per_player`    | `int`            | `1`           | 1 or 2; set at `create_game`; immutable              |
+| `score_base_applied`  | `bool`           | `False`       | Idempotency guard for base scoring                   |
+| `score_bonus_applied` | `bool`           | `False`       | Idempotency guard for bonus scoring                  |
+| `last_base_delta`     | `dict[str, int]` | `{}`         | Per-player base delta after last `SCORE_BASE` apply; cleared on round reset |
+| `last_bonus_delta`    | `dict[str, int]` | `{}`         | Per-player bonus delta after last `SCORE_BONUS` apply; cleared on round reset |
 
-`Game.phase` serializes as its string value (e.g. `"PLAY_CARDS"`) in JSON.
+`Game.phase` serializes as its string value (e.g. `"PLAY_CARDS"`) in JSON. There
+is no `scoring_step` field — the client uses the phase name plus `last_*_delta`
+for scoring screens.
 
 ### 4.3 In-memory store
 
@@ -379,13 +402,9 @@ mutations are synchronous and short.
 
 ### 4.4 Differences from `DATA_MODEL.md`
 
-`DATA_MODEL.md` describes the minimal fields. The implementation adds
-**operational fields** that the spec doesn’t enumerate but that the flow needs:
-
-* `Game.host_id` — required by the host-only transition rules.
-* `Game.score_base_applied` / `Game.score_bonus_applied` — replay protection.
-
-No fields from the spec are missing.
+`DATA_MODEL.md` is the canonical field list. `APP_STATE` §4 mirrors it; the
+`game` JSON from the server is the Pydantic dump plus `available_actions` and
+`card_range` from `game_wire` (see `DATA_MODEL.md` §3).
 
 ---
 
@@ -423,15 +442,14 @@ No fields from the spec are missing.
   and the room is notified via `game_error` / `duplicate_cards`. Players then
   replay their cards from scratch. The same guard runs defensively in
   `next_phase` for the PLAY_CARDS → VOTE transition.
-* **Frontend does not show** `REVEAL_VOTES`, `REVEAL_NARRATOR`, `SCORE_BASE`,
-  `SCORE_BONUS`, `NEXT_ROUND` as distinct screens — they all render the same
-  "Host advances when ready" panel. This matches the "companion to the physical
-  game" intent: the actual reveals happen on the table.
-* **Host advances PLAY_CARDS → VOTE and VOTE → REVEAL_VOTES manually.** After a
-  player has submitted (or is the narrator during VOTE), the host sees the
-  same waiting screen with a "Continue" button enabled once everyone has acted
-  (`allCardsPlayed()` / `allVotesIn()` in `frontend/app.js`). Non-hosts only
-  see the waiting message.
+* **Frontend** (`frontend/app.js` `render()`): `REVEAL_VOTES` shows a per-player
+  vote list; `SCORE_BASE` / `SCORE_BONUS` use `last_base_delta` /
+  `last_bonus_delta` panels; `LEADERBOARD` shows cumulative scores;
+  `REVEAL_NARRATOR` and `NEXT_ROUND` use a generic "host continues" panel
+  (physical table handles the real reveal / round wrap-up between those).
+* **Host continues** are enabled when `next_phase` appears in
+  `state.game.available_actions` (and the user is the host) — the frontend does
+  not count votes or played cards itself.
 * **No automated tests** are checked in; correctness is verified ad hoc via the
   smoke script described in `agent-transcripts` and through manual play.
 

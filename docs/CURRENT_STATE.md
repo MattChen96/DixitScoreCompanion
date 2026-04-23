@@ -42,9 +42,12 @@ Who advances each phase:
 | LEADERBOARD       | `POST /next_phase`                           | Host       |
 | NEXT_ROUND        | `POST /next_phase` → round reset             | Host       |
 
-`/next_phase` is the generic advance. `LOBBY` and `SELECT_NARRATOR` use
-dedicated endpoints (`/start_game`, `/select_narrator`) because they
-require explicit host input.
+`/next_phase` is the generic advance for most phases. **Exception:**
+`LOBBY → SELECT_NARRATOR` uses only `POST /start_game` (not `/next_phase`).
+In `SELECT_NARRATOR`, the host calls `POST /select_narrator` to pick the
+narrator (phase stays `SELECT_NARRATOR`), the narrator calls
+`POST /confirm_narrator`, then the host advances `SELECT_NARRATOR →
+PLAY_CARDS` with `POST /next_phase`.
 
 ---
 
@@ -155,9 +158,11 @@ Covered in detail in `APP_STATE.md`. In brief:
 
 ### 5.2 UX gaps
 
-* `REVEAL_VOTES`, `REVEAL_NARRATOR`, `SCORE_BASE`, `SCORE_BONUS`, and
-  `NEXT_ROUND` all show the same waiting/leaderboard panel. The UI does
-  not visually distinguish what the table is currently doing.
+* `REVEAL_VOTES`, `SCORE_BASE`, `SCORE_BONUS`, and `LEADERBOARD` each
+  have their own screen (per-player vote list, base deltas, bonus deltas,
+  cumulative leaderboard). `REVEAL_NARRATOR` and `NEXT_ROUND` still use a
+  generic "host advances when ready" panel — the physical table handles
+  the actual card reveal between those steps.
 * No card thumbnails / images — players only see numbers. This is
   intentional (the physical deck is on the table), but new players can
   find it dry.
