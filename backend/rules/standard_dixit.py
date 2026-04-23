@@ -154,7 +154,7 @@ class StandardDixitRules(RulesEngine):
                 )
 
         for p in self._active_sorted(game):
-            if p.id != game.narrator_id and p.vote is None:
+            if p.id != game.narrator_id and not p.votes:
                 raise ValueError(
                     f"Cannot score: every active non-narrator must have voted; "
                     f"missing vote for player {p.id!r}."
@@ -178,13 +178,13 @@ class StandardDixitRules(RulesEngine):
         assert narrator_card is not None
 
         voters = [p for p in self._players_sorted(game) if p.id != game.narrator_id]
-        correct = [p for p in voters if p.vote == narrator_card]
+        correct = [p for p in voters if narrator_card in p.votes]
         n_voters = len(voters)
         n_correct = len(correct)
 
+        before = {p.id: p.score for p in game.players}
+
         if n_correct == 0 or n_correct == n_voters:
-            # All or none guessed the narrator's card: narrator scores
-            # fail_all_points, all others score fail_others_points.
             narrator.score += self._cfg.fail_all_points
             for p in self._players_sorted(game):
                 if p.id != game.narrator_id:
@@ -194,6 +194,7 @@ class StandardDixitRules(RulesEngine):
             for p in sorted(correct, key=lambda x: x.id):
                 p.score += self._cfg.correct_guess_points
 
+        game.last_base_delta = {p.id: p.score - before[p.id] for p in game.players}
         game.score_base_applied = True
 
     def _apply_score_bonus(self, game: "Game") -> None:
@@ -211,8 +212,20 @@ class StandardDixitRules(RulesEngine):
 
         voters = [p for p in self._players_sorted(game) if p.id != game.narrator_id]
 
+        before = {p.id: p.score for p in game.players}
+
         for owner in self._players_sorted(game):
-            votes_on_card = sum(1 for v in voters if v.vote == owner.card_played)
+            # Narrator is excluded from bonus scoring: they cannot receive points
+            # for votes cast on their card (players vote FOR it as the "guess",
+            # not to reward the narrator).
+            if owner.id == game.narrator_id:
+                continue
+            if owner.card_played is None:
+                continue
+            votes_on_card = sum(
+                1 for v in voters if owner.card_played in v.votes
+            )
             owner.score += votes_on_card * self._cfg.vote_bonus
 
+        game.last_bonus_delta = {p.id: p.score - before[p.id] for p in game.players}
         game.score_bonus_applied = True

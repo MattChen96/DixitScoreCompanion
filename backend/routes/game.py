@@ -38,6 +38,7 @@ class JoinGameRequest(_Body):
 
 class CreateGameRequest(_Body):
     ruleset: str = Field(default="standard", min_length=1, max_length=32)
+    votes_per_player: int = Field(default=1, ge=1, le=2)
 
 
 class StartGameRequest(_Body):
@@ -66,6 +67,12 @@ class SubmitVoteRequest(_Body):
     game_id: GameIdField
     player_id: PlayerIdField
     card_number: CardNumberField
+
+
+class UpdateVoteRequest(_Body):
+    game_id: GameIdField
+    player_id: PlayerIdField
+    card_numbers: list[CardNumberField] = Field(min_length=1, max_length=2)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +114,9 @@ def list_rulesets() -> list[dict[str, str]]:
 @router.post("/create_game")
 def create_game(body: CreateGameRequest = CreateGameRequest()) -> dict[str, Any]:
     try:
-        game = game_service.create_game(ruleset=body.ruleset)
+        game = game_service.create_game(
+            ruleset=body.ruleset, votes_per_player=body.votes_per_player
+        )
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
     return {"game_id": game.id}
@@ -186,3 +195,17 @@ async def submit_vote(body: SubmitVoteRequest) -> dict[str, Any]:
         raise _http_from_value_error(exc) from exc
     await ws_routes.notify_game_room(game, "vote_submitted")
     return {"game": _game_json(game)}
+
+
+@router.post("/update_vote")
+async def update_vote(body: UpdateVoteRequest) -> dict[str, Any]:
+    try:
+        game = game_service.update_vote(
+            body.game_id, body.player_id, body.card_numbers
+        )
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
+    await ws_routes.notify_game_room(game, "vote_submitted")
+    return {"game": _game_json(game)}
+
+

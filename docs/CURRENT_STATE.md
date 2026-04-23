@@ -50,22 +50,27 @@ require explicit host input.
 
 ## 2. Voting system
 
-* **Exactly 1 vote per non-narrator player** (`Player.vote: int | None`).
+* **1 or 2 votes per non-narrator player** (`Player.votes: list[int]`).
+  The cap is `Game.votes_per_player` (1 or 2, set at game creation, default 1).
   The narrator cannot vote.
-* **Votes are NOT editable.** Once a player submits a vote, the server
-  rejects further `submit_vote` calls with
-  `"This player has already voted this round"` (`game_service.submit_vote`
-  line 239–240).
-* A player **cannot vote their own card**: the server rejects the
-  submission, and the frontend renders the player's own card as a
-  disabled button labelled `(yours)` (`frontend/app.js:renderVote`,
-  CSS `.vote-grid button.own-card`).
+* **Votes are freely editable** throughout the VOTE phase. A player may
+  call `POST /update_vote` to replace their vote list, or
+  `POST /submit_vote` to add a single vote up to the cap. There is no
+  manual lock step — votes become final when the host advances the phase.
+* **Phase transition gate**: the host can advance `VOTE → REVEAL_VOTES`
+  via `POST /next_phase` only once every active non-narrator player has
+  cast at least one vote. The backend enforces this via
+  `available_actions` (which omits `next_phase` until the condition is
+  met); the frontend reflects it by enabling/disabling the Continue
+  button.
+* A player **cannot vote their own card** (server-enforced; own-card
+  buttons are disabled and labelled `(yours)` in the frontend).
+* A player **cannot vote the same card twice** even when 2 votes are
+  allowed.
 * The vote target must be a card number currently `on the table`.
-* The host moves from VOTE to REVEAL_VOTES via `POST /next_phase`. The
-  transition is gated on **every active (connected) non-narrator having
-  voted** — disconnected players do not block the transition.
-* There is no "vote preview" step; clicking a card submits immediately.
-* There is no "vote lock" concept on the server side.
+* **Vote preview (UI state)**: the frontend intercepts card selection and
+  shows a VOTE_PREVIEW confirmation screen before calling `update_vote`.
+  Clicking "Change" returns to the grid; clicking "Confirm" submits.
 
 ---
 
@@ -81,31 +86,37 @@ on `SCORE_BASE` or `SCORE_BONUS`.
 Three rulesets are available; the game picks one at creation time
 (`Game.ruleset`, default `"standard"`).
 
-| Ruleset     | Base (all/none correct)          | Base (some correct)                | Bonus per vote received |
-|-------------|----------------------------------|------------------------------------|-------------------------|
-| `standard`  | narrator 0, others +2            | narrator +3, correct +3, others 0  | +1                      |
-| `high_risk` | narrator **-2**, others +3       | narrator +5, correct +5, others 0  | +2                      |
-| `casual`    | narrator +1, others +2           | narrator +2, correct +2, others 0  | +1                      |
+| Ruleset     | Base (all/none correct)          | Base (some correct)                | Bonus per vote received (non-narrator only) |
+|-------------|----------------------------------|------------------------------------|---------------------------------------------|
+| `standard`  | narrator 0, others +2            | narrator +3, correct +3, others 0  | +1 per vote on their card                   |
+| `high_risk` | narrator **-2**, others +3       | narrator +5, correct +5, others 0  | +2 per vote on their card                   |
+| `casual`    | narrator +1, others +2           | narrator +2, correct +2, others 0  | +1 per vote on their card                   |
 
 Base scoring happens on entering `SCORE_BASE`; bonus scoring on entering
 `SCORE_BONUS`. Idempotency flags (`score_base_applied`,
 `score_bonus_applied`) prevent double application.
 
+The narrator is **excluded from bonus scoring** — they do not receive
+points for votes cast on their card. Only non-narrator players earn
+bonus points.
+
 ### 3.2 How points are displayed
 
-* The frontend **does not** render a dedicated scoring animation or a
-  per-round delta view.
-* Phases `SCORE_BASE`, `SCORE_BONUS`, and `LEADERBOARD` all render the
-  same screen: a sorted list of `{nickname, total score}`
-  (`frontend/app.js:renderLeaderboard`, lines ~604–630). `REVEAL_VOTES`,
-  `REVEAL_NARRATOR`, and `NEXT_ROUND` render a generic
-  "Host advances when ready" panel.
-* The host sees a Continue button enabled whenever the current phase
-  accepts a host advance (driven by `state.game.available_actions`).
-  Non-hosts see only the waiting/leaderboard screen.
-* There are no point-increment animations, no "Player A +3" lines, no
-  distinction in the UI between base and bonus. Only the new cumulative
-  total is visible after each host advance.
+* `SCORE_BASE` renders a **base-points panel**: a list of
+  `nickname +N` rows sorted by delta descending. Players with a zero
+  delta are shown dimmed. (`frontend/app.js:renderScoring("base")`)
+* `SCORE_BONUS` renders the same layout as a **bonus-points panel**.
+  (`frontend/app.js:renderScoring("bonus")`)
+* Both panels show only numbers — no explanation of the scoring rules.
+* `LEADERBOARD` renders sorted cumulative totals
+  (`frontend/app.js:renderLeaderboard`).
+* `REVEAL_NARRATOR` and `NEXT_ROUND` render a generic "Host advances
+  when ready" panel.
+* The host sees a Continue button (enabled when `next_phase` is in
+  `available_actions`). Non-hosts see the panel without the button.
+* Per-round deltas are stored on the game as `Game.last_base_delta`
+  and `Game.last_bonus_delta` (dicts of `player_id → points`),
+  populated by the rules engine and cleared on round reset.
 
 ---
 
@@ -124,7 +135,7 @@ Covered in detail in `APP_STATE.md`. In brief:
   `game_error`/`duplicate_cards` event.
 * **Reconnect**: a `recovery_token` is returned only by `/join_game`,
   stored in `localStorage`, and replayed on every WebSocket open. A
-  successful reconnect restores score, `card_played`, and `vote`
+  successful reconnect restores score, `card_played`, and `votes`
   byte-for-byte.
 * **Heartbeat**: client pings every ~15 s. A background task flips
   silent players (>45 s) to `connected = false` and broadcasts
@@ -140,21 +151,6 @@ Covered in detail in `APP_STATE.md`. In brief:
 
 ### 5.1 Gameplay limitations
 
-* **Single vote only** per player — Dixit natively supports one vote,
-  but some house-rule variants with 6–7 players allow 2 votes; this is
-  not supported today.
-* **Votes are immutable** once submitted. A misclick forces the player
-  to live with the wrong vote.
-* **No vote preview / confirmation step**. Clicks are final.
-* **No host-controlled vote locking.** The host only advances phases;
-  there is no intermediate "votes are locked" state between submission
-  and reveal.
-* **No progressive scoring display.** `SCORE_BASE` and `SCORE_BONUS`
-  both just render the leaderboard; there is no per-round
-  `+N` breakdown.
-* **No per-player vote history** visible in UI. During `REVEAL_VOTES`
-  the server exposes `cards_on_table` and each player's `vote`, but the
-  current frontend does not render "who voted what".
 * **Host disconnect stalls the game.** No host migration / handoff.
 
 ### 5.2 UX gaps

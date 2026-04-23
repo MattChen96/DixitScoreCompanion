@@ -215,6 +215,29 @@ async def _handle_client_action(
             await _send_error(ws, str(exc))
         return
 
+    if event == "update_vote":
+        try:
+            player_id = data["player_id"]
+            card_numbers = [int(c) for c in data["card_numbers"]]
+        except (KeyError, TypeError, ValueError):
+            await _send_error(ws, "Missing or invalid player_id / card_numbers")
+            return
+
+        game = game_service.get_game(game_id)
+        if game is not None:
+            try:
+                game_service.touch_player(game, player_id)
+                _attach_player_socket(game_id, player_id, ws)
+            except ValueError:
+                pass
+
+        try:
+            game = game_service.update_vote(game_id, player_id, card_numbers)
+            await notify_game_room(game, "vote_submitted")
+        except ValueError as exc:
+            await _send_error(ws, str(exc))
+        return
+
     await _send_error(ws, f"Unknown event: {event!r}")
 
 
