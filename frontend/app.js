@@ -517,7 +517,7 @@
 
     // Player already has at least one confirmed vote and is not editing.
     if (myVotes.length > 0 && pendingVote === null) {
-      renderVoteWaiting();
+      renderVoteSubmitted(myVotes);
       return;
     }
 
@@ -617,29 +617,65 @@
     };
   }
 
-  // Waiting panel shown to players who have already voted (or are the narrator)
-  // during the VOTE phase. Host sees Continue when all active voters have voted.
+  // Shown to a non-narrator player whose vote is confirmed. Keeps the selected
+  // card(s) visible in large format so the player knows what they voted for.
+  function renderVoteSubmitted(votes) {
+    var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
+    var voteWord = votes.length === 1 ? "vote" : "votes";
+
+    var tiles = votes
+      .map(function (c) {
+        return '<div class="vote-preview-card">' + escapeHtml(String(c)) + "</div>";
+      })
+      .join("");
+
+    var html =
+      '<div class="panel">' +
+      '<p class="muted">Your ' + voteWord + " (submitted)</p>" +
+      '<div class="vote-preview">' + tiles + "</div>" +
+      '<button type="button" class="ghost" id="btn-change-vote" style="margin-top:0.75rem">Change vote</button>';
+
+    if (canAdvance) {
+      html +=
+        '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue</button>';
+    }
+
+    html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+    $("main").innerHTML = html;
+
+    $("btn-change-vote").onclick = function () {
+      pendingVote = votes.slice();
+      previewReady = false;
+      render();
+    };
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function () {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function (data) { state.game = data.game; render(); })
+          .catch(function (e) { showError(e.message); });
+      };
+    }
+
+    $("btn-leave").onclick = function () {
+      clearSession();
+      render();
+    };
+  }
+
+  // Waiting panel for the narrator (who never votes) during the VOTE phase.
+  // Host sees Continue when all active voters have voted.
   function renderVoteWaiting() {
-    var isNarrator = state.playerId === state.game.narrator_id;
     var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
 
-    var label;
-    if (isHost()) {
-      label = canAdvance
-        ? "All votes are in — continue when ready."
-        : "Waiting for all players to vote…";
-    } else if (isNarrator) {
-      label = "You are the storyteller — waiting for the host.";
-    } else {
-      label = "Waiting for other votes…";
-    }
+    var label = isHost()
+      ? (canAdvance ? "All votes are in — continue when ready." : "Waiting for all players to vote…")
+      : "You are the storyteller — waiting for the host.";
 
     var html = '<div class="panel"><p class="muted">' + escapeHtml(label) + "</p>";
-
-    // Non-narrator players can always change their vote during VOTE phase.
-    if (!isNarrator) {
-      html += '<button type="button" class="ghost" id="btn-change-vote" style="margin-top:0.5rem">Change vote</button>';
-    }
 
     if (canAdvance) {
       html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue</button>';
@@ -647,16 +683,6 @@
 
     html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
     $("main").innerHTML = html;
-
-    var btnChangeVote = $("btn-change-vote");
-    if (btnChangeVote) {
-      btnChangeVote.onclick = function () {
-        var p = me();
-        pendingVote = (p && p.votes) ? p.votes.slice() : [];
-        previewReady = false;
-        render();
-      };
-    }
 
     var btnNext = $("btn-next");
     if (btnNext) {
@@ -747,7 +773,8 @@
           } else {
             pills = votes
               .map(function (c) {
-                return '<span class="reveal-pill">' + escapeHtml(String(c)) + "</span>";
+                return '<span class="reveal-pill' + (isMe ? " my-vote" : "") + '">' +
+                  escapeHtml(String(c)) + "</span>";
               })
               .join("");
           }
