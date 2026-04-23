@@ -166,8 +166,9 @@ The **standard** (default) ruleset implements classic Dixit scoring:
   * Otherwise: narrator gets **+3**, every correct guesser gets **+3**,
     others get **0**.
 * **Bonus** — on entering `SCORE_BONUS`:
-  * Every player (including the narrator) gets **+1 per vote received**
-    on the card they played this round.
+  * Every **non-narrator** player gets **+1 per vote received** on the
+    card they played this round. The narrator is excluded from bonus
+    scoring.
 
 Other rulesets adjust these numbers (see
 `backend/rules/config/high_risk.json`,

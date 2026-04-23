@@ -215,6 +215,11 @@ class StandardDixitRules(RulesEngine):
         before = {p.id: p.score for p in game.players}
 
         for owner in self._players_sorted(game):
+            # Narrator is excluded from bonus scoring: they cannot receive points
+            # for votes cast on their card (players vote FOR it as the "guess",
+            # not to reward the narrator).
+            if owner.id == game.narrator_id:
+                continue
             if owner.card_played is None:
                 continue
             votes_on_card = sum(

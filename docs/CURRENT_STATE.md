@@ -86,15 +86,19 @@ on `SCORE_BASE` or `SCORE_BONUS`.
 Three rulesets are available; the game picks one at creation time
 (`Game.ruleset`, default `"standard"`).
 
-| Ruleset     | Base (all/none correct)          | Base (some correct)                | Bonus per vote received |
-|-------------|----------------------------------|------------------------------------|-------------------------|
-| `standard`  | narrator 0, others +2            | narrator +3, correct +3, others 0  | +1                      |
-| `high_risk` | narrator **-2**, others +3       | narrator +5, correct +5, others 0  | +2                      |
-| `casual`    | narrator +1, others +2           | narrator +2, correct +2, others 0  | +1                      |
+| Ruleset     | Base (all/none correct)          | Base (some correct)                | Bonus per vote received (non-narrator only) |
+|-------------|----------------------------------|------------------------------------|---------------------------------------------|
+| `standard`  | narrator 0, others +2            | narrator +3, correct +3, others 0  | +1 per vote on their card                   |
+| `high_risk` | narrator **-2**, others +3       | narrator +5, correct +5, others 0  | +2 per vote on their card                   |
+| `casual`    | narrator +1, others +2           | narrator +2, correct +2, others 0  | +1 per vote on their card                   |
 
 Base scoring happens on entering `SCORE_BASE`; bonus scoring on entering
 `SCORE_BONUS`. Idempotency flags (`score_base_applied`,
 `score_bonus_applied`) prevent double application.
+
+The narrator is **excluded from bonus scoring** — they do not receive
+points for votes cast on their card. Only non-narrator players earn
+bonus points.
 
 ### 3.2 How points are displayed
 
