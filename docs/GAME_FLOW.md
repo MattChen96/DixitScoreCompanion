@@ -52,7 +52,7 @@ Every `Game` starts in `LOBBY` and loops from `NEXT_ROUND` back to
 | Phase             | Player actions                                   | Host actions                                   | Transition trigger                                  | → Next phase     |
 |-------------------|--------------------------------------------------|------------------------------------------------|-----------------------------------------------------|------------------|
 | `LOBBY`           | `POST /join_game` (any number)                   | `POST /start_game` (≥ 3 players required)      | `/start_game`                                       | `SELECT_NARRATOR`|
-| `SELECT_NARRATOR` | —                                                | `POST /select_narrator {narrator_id}`          | `/select_narrator`                                  | `PLAY_CARDS`     |
+| `SELECT_NARRATOR` | Narrator calls `POST /confirm_narrator` once chosen | `POST /select_narrator {narrator_id}` then `POST /next_phase` (after narrator confirms) | `/next_phase` (validation: `Game.narrator_confirmed == true`) | `PLAY_CARDS` |
 | `PLAY_CARDS`      | `POST /submit_card {card_number}` — each active player including the narrator picks a **unique** card number | `POST /next_phase`                             | `/next_phase` (validation: all active players played, narrator has played, all card numbers unique) | `VOTE`           |
 | `VOTE`            | `POST /submit_vote {card_number}` or `POST /update_vote {card_numbers}` — non-narrator only; freely editable until host advances. | `POST /next_phase`                             | `/next_phase` (validation: all active non-narrators have ≥1 vote) | `REVEAL_VOTES`   |
 | `REVEAL_VOTES`    | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `REVEAL_NARRATOR`|
@@ -67,12 +67,14 @@ Rules:
 * **Only the host** may trigger phase transitions (`host_id` is set to
   the first joiner and never changes).
 * **Players** may only call `submit_card` / `submit_vote` /
-  `update_vote` during the corresponding phase; every other call in a
-  wrong phase is rejected.
-* `/next_phase` is the generic advance. `LOBBY → SELECT_NARRATOR` and
-  `SELECT_NARRATOR → PLAY_CARDS` are the two exceptions and use
-  dedicated endpoints so the host's explicit inputs (start / narrator
-  choice) are captured.
+  `update_vote` / `confirm_narrator` during the corresponding phase;
+  every other call in a wrong phase is rejected.
+* `/next_phase` is the generic advance. `LOBBY → SELECT_NARRATOR` is
+  the only exception and uses a dedicated endpoint (`/start_game`).
+* `SELECT_NARRATOR → PLAY_CARDS` now also uses `/next_phase`, but only
+  after the host calls `POST /select_narrator` **and** the chosen
+  narrator calls `POST /confirm_narrator`. The backend blocks
+  `/next_phase` until `Game.narrator_confirmed == true`.
 
 ---
 
@@ -184,14 +186,15 @@ Triggered when `/next_phase` advances `NEXT_ROUND → SELECT_NARRATOR`.
 Clears:
 
 * every `Player.card_played`
-* every `Player.vote` (current) / `Player.votes` (target)
+* every `Player.votes`
 * `Game.cards_on_table`
 * `Game.score_base_applied` / `Game.score_bonus_applied`
-* `Game.scoring_step` (target)
+* `Game.last_base_delta` / `Game.last_bonus_delta`
+* `Game.narrator_id` — narrator is re-selected each round
+* `Game.narrator_confirmed` — confirmation resets with each new narrator
 
 Preserves:
 
 * `Player.score` — cumulative across rounds.
-* `Game.players`, `Game.host_id`, `Game.narrator_id` (the narrator
-  rotates only via `/select_narrator` in the next phase).
+* `Game.players`, `Game.host_id` — immutable for the game's lifetime.
 * `Game.ruleset` — immutable.

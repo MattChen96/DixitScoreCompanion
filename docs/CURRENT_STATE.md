@@ -32,7 +32,7 @@ Who advances each phase:
 | Phase             | Transition trigger                           | Controller |
 |-------------------|----------------------------------------------|------------|
 | LOBBY             | `POST /start_game` (≥ 3 players)             | Host       |
-| SELECT_NARRATOR   | `POST /select_narrator`                      | Host       |
+| SELECT_NARRATOR   | `POST /select_narrator` (host picks) → narrator calls `POST /confirm_narrator` → `POST /next_phase` (host advances) | Host + Narrator |
 | PLAY_CARDS        | `POST /next_phase`                           | Host       |
 | VOTE              | `POST /next_phase`                           | Host       |
 | REVEAL_VOTES      | `POST /next_phase`                           | Host       |
@@ -161,9 +161,8 @@ Covered in detail in `APP_STATE.md`. In brief:
 * No card thumbnails / images — players only see numbers. This is
   intentional (the physical deck is on the table), but new players can
   find it dry.
-* No narrator hint on the lobby screen after SELECT_NARRATOR; the
-  chosen narrator is shown but there is no confirmation that _you_ are
-  the narrator until PLAY_CARDS.
+* The narrator confirmation UI is implemented but there is no visible
+  countdown or progress indicator for other players while they wait.
 * No explicit "connection lost" banner; when the socket drops the
   client silently retries every 2 s.
 * No rule-picker UI. `POST /create_game {ruleset}` works, but the

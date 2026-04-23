@@ -10,7 +10,7 @@ Protocol (matches ``.docs/API_SPECS.md``):
   source of truth: clients must replace their local state from ``game`` on
   every message that carries one.
 - Client -> server events: ``join_room``, ``submit_card``, ``submit_vote``,
-  ``reconnect``, ``ping``.
+  ``update_vote``, ``confirm_narrator``, ``reconnect``, ``ping``.
 - Server -> client events: ``game_state``, ``player_joined``, ``phase_changed``,
   ``card_submitted``, ``vote_submitted``, ``scores_updated``, ``game_error``
   (room-wide gameplay error, e.g. duplicate cards),
@@ -234,6 +234,25 @@ async def _handle_client_action(
         try:
             game = game_service.update_vote(game_id, player_id, card_numbers)
             await notify_game_room(game, "vote_submitted")
+        except ValueError as exc:
+            await _send_error(ws, str(exc))
+        return
+
+    if event == "confirm_narrator":
+        player_id = data.get("player_id") if isinstance(data, dict) else None
+        if not isinstance(player_id, str):
+            await _send_error(ws, "Missing or invalid player_id")
+            return
+        game = game_service.get_game(game_id)
+        if game is not None:
+            try:
+                game_service.touch_player(game, player_id)
+                _attach_player_socket(game_id, player_id, ws)
+            except ValueError:
+                pass
+        try:
+            game = game_service.confirm_narrator(game_id, player_id)
+            await notify_game_room(game, "narrator_confirmed")
         except ValueError as exc:
             await _send_error(ws, str(exc))
         return

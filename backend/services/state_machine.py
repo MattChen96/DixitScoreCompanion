@@ -56,29 +56,23 @@ def transition_phase(game: Game, requester_id: str, to_phase: GamePhase) -> Game
     return game
 
 
-# Phases where generic "next phase" is not allowed (use start_game / select_narrator).
-_NO_BLIND_ADVANCE: frozenset[GamePhase] = frozenset(
-    {GamePhase.LOBBY, GamePhase.SELECT_NARRATOR}
-)
+# Phases where generic "next phase" is not allowed (use dedicated endpoints).
+_NO_BLIND_ADVANCE: frozenset[GamePhase] = frozenset({GamePhase.LOBBY})
 
 
 def advance_phase_by_host(game: Game, requester_id: str) -> Game:
     """
     Move to the single legal successor for the current phase (host-only).
 
-    LOBBY and SELECT_NARRATOR cannot be advanced this way; use start_game or
-    select_narrator instead.
+    LOBBY cannot be advanced this way; use start_game instead.
+    SELECT_NARRATOR requires the narrator to have confirmed first
+    (enforced in game_service.next_phase before this is called).
     """
     current = game.phase
     if current in _NO_BLIND_ADVANCE:
-        if current == GamePhase.LOBBY:
-            raise ValueError(
-                "Cannot advance from LOBBY this way: use start_game (host) "
-                "to move to SELECT_NARRATOR."
-            )
         raise ValueError(
-            "Cannot advance from SELECT_NARRATOR this way: use select_narrator "
-            "(host) to move to PLAY_CARDS after choosing the narrator."
+            "Cannot advance from LOBBY this way: use start_game (host) "
+            "to move to SELECT_NARRATOR."
         )
 
     nxt = allowed_next_phases(current)

@@ -54,3 +54,7 @@ class Game(BaseModel):
     # Defaults to 1 (classic Dixit). Exposed in every broadcast so the
     # frontend can render the vote grid correctly without hardcoding.
     votes_per_player: int = 1
+    # Set to True by POST /confirm_narrator (narrator only, SELECT_NARRATOR
+    # phase). The host can advance to PLAY_CARDS only after this is True.
+    # Cleared on round reset (NEXT_ROUND → SELECT_NARRATOR).
+    narrator_confirmed: bool = False

@@ -75,6 +75,11 @@ class UpdateVoteRequest(_Body):
     card_numbers: list[CardNumberField] = Field(min_length=1, max_length=2)
 
 
+class ConfirmNarratorRequest(_Body):
+    game_id: GameIdField
+    player_id: PlayerIdField
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -170,7 +175,18 @@ async def select_narrator(body: SelectNarratorRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
-    await ws_routes.notify_game_room(game, "phase_changed")
+    # Phase stays SELECT_NARRATOR until narrator confirms — use a dedicated event.
+    await ws_routes.notify_game_room(game, "narrator_selected")
+    return {"game": _game_json(game)}
+
+
+@router.post("/confirm_narrator")
+async def confirm_narrator(body: ConfirmNarratorRequest) -> dict[str, Any]:
+    try:
+        game = game_service.confirm_narrator(body.game_id, body.player_id)
+    except ValueError as exc:
+        raise _http_from_value_error(exc) from exc
+    await ws_routes.notify_game_room(game, "narrator_confirmed")
     return {"game": _game_json(game)}
 
 

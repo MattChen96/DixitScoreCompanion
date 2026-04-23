@@ -389,37 +389,23 @@
   }
 
   function renderSelectNarrator() {
-    if (isHost()) {
-      var canPick = actions().indexOf("select_narrator") !== -1;
-      var opts = state.game.players
-        .map(function (p) {
-          return (
-            '<option value="' +
-            escapeHtml(p.id) +
-            '">' +
-            escapeHtml(p.nickname) +
-            "</option>"
-          );
-        })
-        .join("");
+    var narId = state.game.narrator_id;
+    var confirmed = state.game.narrator_confirmed;
+    var amNarrator = narId === state.playerId;
+
+    // ── Narrator who hasn't confirmed yet ──────────────────────────────────
+    if (amNarrator && !confirmed) {
       $("main").innerHTML =
-        '<div class="panel"><label>Storyteller this round</label>' +
-        '<select id="narr"' +
-        (canPick ? "" : " disabled") +
-        ">" +
-        opts +
-        '</select><button type="button" class="primary" id="btn-narr"' +
-        (canPick ? "" : " disabled") +
-        ">Choose storyteller</button>" +
-        '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
-      $("btn-narr").onclick = function () {
-        if (actions().indexOf("select_narrator") === -1) return;
+        '<div class="panel">' +
+        "<label>You have been chosen as storyteller!</label>" +
+        '<p style="margin:0.5rem 0 1rem">Accept your role to let the host start the round.</p>' +
+        '<button type="button" class="primary" id="btn-confirm-narrator">Accept as storyteller</button>' +
+        "</div>";
+      $("btn-confirm-narrator").onclick = function () {
         showError("");
-        var nid = $("narr").value;
-        api("/select_narrator", {
+        api("/confirm_narrator", {
           game_id: state.gameId,
           player_id: state.playerId,
-          narrator_id: nid,
         })
           .then(function (data) {
             state.game = data.game;
@@ -429,12 +415,108 @@
             showError(e.message);
           });
       };
-      $("btn-leave").onclick = function () {
-        clearSession();
-        render();
-      };
-    } else {
+      return;
+    }
+
+    // ── Host view ───────────────────────────────────────────────────────────
+    if (isHost()) {
+      var canPick = actions().indexOf("select_narrator") !== -1;
+      var canAdvance = actions().indexOf("next_phase") !== -1;
+
+      if (narId === null || canPick) {
+        // No narrator picked yet (or can still pick) — show dropdown
+        var opts = state.game.players
+          .map(function (p) {
+            return (
+              '<option value="' +
+              escapeHtml(p.id) +
+              '">' +
+              escapeHtml(p.nickname) +
+              "</option>"
+            );
+          })
+          .join("");
+        $("main").innerHTML =
+          '<div class="panel"><label>Choose the storyteller for this round</label>' +
+          '<select id="narr"' +
+          (canPick ? "" : " disabled") +
+          ">" +
+          opts +
+          '</select><button type="button" class="primary" id="btn-narr"' +
+          (canPick ? "" : " disabled") +
+          ">Choose storyteller</button>" +
+          '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+        $("btn-narr").onclick = function () {
+          if (actions().indexOf("select_narrator") === -1) return;
+          showError("");
+          var nid = $("narr").value;
+          api("/select_narrator", {
+            game_id: state.gameId,
+            player_id: state.playerId,
+            narrator_id: nid,
+          })
+            .then(function (data) {
+              state.game = data.game;
+              render();
+            })
+            .catch(function (e) {
+              showError(e.message);
+            });
+        };
+        $("btn-leave").onclick = function () {
+          clearSession();
+          render();
+        };
+      } else if (!confirmed) {
+        // Narrator selected but hasn't confirmed yet
+        var narNick = escapeHtml(
+          (state.game.players.find(function (p) { return p.id === narId; }) || {}).nickname || "?"
+        );
+        $("main").innerHTML =
+          '<div class="panel">' +
+          "<label>Waiting for " + narNick + " to accept the storyteller role…</label>" +
+          "</div>";
+      } else {
+        // Narrator confirmed — host can advance
+        var narNick2 = escapeHtml(
+          (state.game.players.find(function (p) { return p.id === narId; }) || {}).nickname || "?"
+        );
+        $("main").innerHTML =
+          '<div class="panel">' +
+          "<label>" + narNick2 + " accepted as storyteller.</label>" +
+          '<button type="button" class="primary" id="btn-next"' +
+          (canAdvance ? "" : " disabled") +
+          ">Continue to card phase</button>" +
+          "</div>";
+        $("btn-next").onclick = function () {
+          if (!canAdvance) return;
+          showError("");
+          api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+            .then(function (data) {
+              state.game = data.game;
+              render();
+            })
+            .catch(function (e) {
+              showError(e.message);
+            });
+        };
+      }
+      return;
+    }
+
+    // ── Non-host, non-narrator ──────────────────────────────────────────────
+    if (narId === null) {
       renderWaiting("Waiting for the host to pick the storyteller…");
+    } else if (!confirmed) {
+      var narNick3 = escapeHtml(
+        (state.game.players.find(function (p) { return p.id === narId; }) || {}).nickname || "?"
+      );
+      renderWaiting("Waiting for " + narNick3 + " to accept the storyteller role…");
+    } else {
+      var narNick4 = escapeHtml(
+        (state.game.players.find(function (p) { return p.id === narId; }) || {}).nickname || "?"
+      );
+      renderWaiting(narNick4 + " accepted. Waiting for the host to start the round…");
     }
   }
 

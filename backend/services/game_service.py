@@ -81,6 +81,8 @@ def _reset_round_after_next(game: Game) -> None:
     game.score_bonus_applied = False
     game.last_base_delta.clear()
     game.last_bonus_delta.clear()
+    game.narrator_id = None
+    game.narrator_confirmed = False
 
 
 def _has_duplicate_cards(game: Game) -> bool:
@@ -180,7 +182,27 @@ def select_narrator(game_id: str, requester_id: str, narrator_id: str) -> Game:
         raise ValueError("Narrator is not a player in this game")
 
     game.narrator_id = narrator_id
-    transition_phase(game, requester_id, GamePhase.PLAY_CARDS)
+    game.narrator_confirmed = False
+    return game
+
+
+def confirm_narrator(game_id: str, requester_id: str) -> Game:
+    """Narrator explicitly accepts their role before PLAY_CARDS begins.
+
+    Only the designated narrator may call this. The host can then advance
+    ``SELECT_NARRATOR → PLAY_CARDS`` via ``POST /next_phase``.
+    """
+    game = _require_game(game_id)
+    _require_phase(game, GamePhase.SELECT_NARRATOR, "Confirming narrator role")
+
+    if game.narrator_id is None:
+        raise ValueError("No narrator has been selected yet")
+    if requester_id != game.narrator_id:
+        raise ValueError("Only the selected narrator can confirm their role")
+    if game.narrator_confirmed:
+        raise ValueError("Narrator has already confirmed")
+
+    game.narrator_confirmed = True
     return game
 
 
@@ -188,6 +210,14 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     game = _require_game(game_id)
 
     old_phase = game.phase
+
+    if old_phase == GamePhase.SELECT_NARRATOR:
+        if game.narrator_id is None:
+            raise ValueError("A narrator must be selected before advancing")
+        if not game.narrator_confirmed:
+            raise ValueError(
+                "The narrator must confirm their role before the host can advance"
+            )
 
     # Defensive: never advance out of PLAY_CARDS while duplicate cards exist.
     # In normal operation submit_card already prevents this, but the guard keeps
@@ -331,7 +361,12 @@ def available_actions(game: Game) -> list[str]:
             actions.append("start_game")
 
     elif phase == GamePhase.SELECT_NARRATOR:
-        actions.append("select_narrator")
+        if game.narrator_id is None:
+            actions.append("select_narrator")
+        else:
+            actions.append("confirm_narrator")
+            if game.narrator_confirmed:
+                actions.append("next_phase")
 
     elif phase == GamePhase.PLAY_CARDS:
         actions.append("submit_card")
