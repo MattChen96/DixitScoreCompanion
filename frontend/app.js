@@ -275,7 +275,14 @@
       pill.classList.add("hidden");
       return;
     }
-    pill.textContent = state.game.phase.replace(/_/g, " ");
+    var phaseText = state.game.phase.replace(/_/g, " ");
+    // Show submission step for TURN_SUBMISSION phase
+    if (state.game.phase === "TURN_SUBMISSION" && state.game.submission_step) {
+      phaseText = state.game.submission_step === "declaration"
+        ? "TURN: DECLARE CARD"
+        : "TURN: VOTE";
+    }
+    pill.textContent = phaseText;
     pill.classList.remove("hidden");
   }
 
@@ -521,65 +528,354 @@
   }
 
   function renderPlayCards() {
+    // Legacy function - redirects to new turn submission flow
+    renderTurnSubmission();
+  }
+
+  // ---------------------------------------------------------------------------
+  // TURN SUBMISSION - Unified declaration + voting wizard
+  // ---------------------------------------------------------------------------
+
+  function renderTurnSubmission() {
     var p = me();
     if (!p) {
       renderWaiting("Loading…");
       return;
     }
+
+    var step = state.game.submission_step; // "declaration" or "voting"
+    var isNarrator = state.playerId === state.game.narrator_id;
+
+    // Build wizard step indicator
+    var declarationStepClass = step === "declaration" ? "active" : "completed";
+    var votingStepClass = step === "voting" ? "active" : "";
+    var stepIndicator =
+      '<div class="wizard-steps">' +
+      '<div class="wizard-step ' + declarationStepClass + '">1. Declare card</div>' +
+      '<div class="wizard-step ' + votingStepClass + '">2. Vote</div>' +
+      '</div>';
+
+    if (step === "declaration") {
+      renderDeclarationStep(p, isNarrator, stepIndicator);
+    } else if (step === "voting") {
+      renderVotingStep(p, isNarrator, stepIndicator);
+    } else {
+      renderWaiting("Waiting for turn submission to begin…");
+    }
+  }
+
+  // Declaration sub-step: player declares which card they played
+  function renderDeclarationStep(p, isNarrator, stepIndicator) {
+    // Already declared - waiting for others
     if (p.card_played != null) {
-      var allPlayed = actions().indexOf("next_phase") !== -1;
-      var label = allPlayed
-        ? "All cards played. Continue to voting when ready."
-        : "Waiting for other players to play a card…";
-      renderHostContinue(label, allPlayed);
+      var live = state.game.players.filter(function(pl) { return pl.connected; });
+      var declared = live.filter(function(pl) { return pl.card_played != null; });
+      var waiting = live.length - declared.length;
+      
+      var statusMsg = waiting > 0
+        ? "Waiting for " + waiting + " player" + (waiting === 1 ? "" : "s") + " to declare their card…"
+        : "All cards declared! Validating…";
+
+      $("main").innerHTML =
+        '<div class="panel">' + stepIndicator +
+        '<p class="muted">' + escapeHtml(statusMsg) + '</p>' +
+        '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(p.card_played)) + '</div>' +
+        '<div class="card-label">Your declared card</div>' +
+        '</div>' +
+        '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+      $("btn-leave").onclick = function() { clearSession(); render(); };
       return;
     }
+
+    // Show card picker grid
     var range = cardRange();
-    var canPlay = actions().indexOf("submit_card") !== -1;
+    var canDeclare = actions().indexOf("submit_card") !== -1;
+
+    // Create grid of card numbers (7 columns)
+    var gridBtns = "";
+    for (var n = range.min; n <= range.max; n++) {
+      gridBtns +=
+        '<button type="button" data-card="' + n + '"' +
+        (canDeclare ? "" : " disabled") +
+        '>' + n + '</button>';
+    }
+
     $("main").innerHTML =
-      '<div class="panel"><label>Your card number (' +
-      range.min +
-      "–" +
-      range.max +
-      ')</label>' +
-      '<input type="number" id="cardn" min="' +
-      range.min +
-      '" max="' +
-      range.max +
-      '" step="1" inputmode="numeric"' +
-      (canPlay ? "" : " disabled") +
-      " />" +
-      '<button type="button" class="primary" id="btn-card"' +
-      (canPlay ? "" : " disabled") +
-      ">Play card</button>" +
+      '<div class="panel">' + stepIndicator +
+      '<p class="muted">Select the card number you played:</p>' +
+      '<div class="card-picker-grid">' + gridBtns + '</div>' +
       '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
-    $("btn-card").onclick = function () {
-      if (actions().indexOf("submit_card") === -1) return;
+
+    document.querySelectorAll(".card-picker-grid button").forEach(function(btn) {
+      btn.onclick = function() {
+        if (btn.disabled) return;
+        var cardNum = parseInt(btn.getAttribute("data-card"), 10);
+        submitCardDeclaration(cardNum);
+      };
+    });
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  function submitCardDeclaration(cardNumber) {
+    showError("");
+    api("/submit_card", {
+      game_id: state.gameId,
+      player_id: state.playerId,
+      card_number: cardNumber,
+    })
+      .then(function(data) {
+        state.game = data.game;
+        render();
+      })
+      .catch(function(e) {
+        showError(e.message);
+      });
+  }
+
+  // Voting sub-step: player votes for narrator's card
+  function renderVotingStep(p, isNarrator, stepIndicator) {
+    var votesPerPlayer = state.game.votes_per_player || 1;
+    var myVotes = p.votes || [];
+    var myDeclaredCard = p.card_played;
+
+    // Narrator doesn't vote
+    if (isNarrator) {
+      renderNarratorVotingWait(stepIndicator);
+      return;
+    }
+
+    // Player already voted and not editing
+    if (myVotes.length > 0 && pendingVote === null) {
+      renderVoteSubmittedWithBanner(myVotes, myDeclaredCard, stepIndicator);
+      return;
+    }
+
+    // Vote preview (before confirming)
+    if (pendingVote !== null && previewReady) {
+      renderVotePreviewWithBanner(myDeclaredCard, stepIndicator);
+      return;
+    }
+
+    // Show vote grid
+    renderVoteGridWithBanner(p, myDeclaredCard, stepIndicator, votesPerPlayer);
+  }
+
+  function renderNarratorVotingWait(stepIndicator) {
+    var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
+    var label = isHost()
+      ? (canAdvance ? "All votes are in — continue when ready." : "Waiting for all players to vote…")
+      : "You are the storyteller — waiting for votes.";
+
+    var html = '<div class="panel">' + stepIndicator +
+      '<p class="muted">' + escapeHtml(label) + '</p>';
+
+    if (canAdvance) {
+      html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue to reveal</button>';
+    }
+
+    html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+    $("main").innerHTML = html;
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function() {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function(data) { state.game = data.game; render(); })
+          .catch(function(e) { showError(e.message); });
+      };
+    }
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  function renderVoteSubmittedWithBanner(votes, declaredCard, stepIndicator) {
+    var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
+    var voteWord = votes.length === 1 ? "vote" : "votes";
+
+    var tiles = votes.map(function(c) {
+      return '<div class="vote-preview-card">' + escapeHtml(String(c)) + '</div>';
+    }).join("");
+
+    var declaredBanner = declaredCard != null
+      ? '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
+        '<div class="card-label">Your played card</div></div>'
+      : '';
+
+    var html = '<div class="panel">' + stepIndicator +
+      declaredBanner +
+      '<p class="muted">Your ' + voteWord + ' (submitted)</p>' +
+      '<div class="vote-preview">' + tiles + '</div>' +
+      '<button type="button" class="ghost" id="btn-change-vote" style="margin-top:0.75rem">Change vote</button>';
+
+    if (canAdvance) {
+      html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue to reveal</button>';
+    }
+
+    html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+    $("main").innerHTML = html;
+
+    $("btn-change-vote").onclick = function() {
+      pendingVote = votes.slice();
+      previewReady = false;
+      render();
+    };
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function() {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function(data) { state.game = data.game; render(); })
+          .catch(function(e) { showError(e.message); });
+      };
+    }
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  function renderVotePreviewWithBanner(declaredCard, stepIndicator) {
+    var selection = pendingVote || [];
+    var canSubmit = actions().indexOf("update_vote") !== -1 ||
+                    actions().indexOf("submit_vote") !== -1;
+
+    var tiles = selection.map(function(c) {
+      return '<div class="vote-preview-card">' + escapeHtml(String(c)) + '</div>';
+    }).join("");
+
+    var voteWord = selection.length === 1 ? "vote" : "votes";
+
+    var declaredBanner = declaredCard != null
+      ? '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
+        '<div class="card-label">Your played card</div></div>'
+      : '';
+
+    $("main").innerHTML =
+      '<div class="panel">' + stepIndicator +
+      declaredBanner +
+      '<p class="muted">Confirm your ' + voteWord + '?</p>' +
+      '<div class="vote-preview">' + tiles + '</div>' +
+      '<button type="button" class="primary" id="btn-confirm"' +
+      (canSubmit ? "" : " disabled") + '>Confirm</button>' +
+      '<button type="button" class="ghost" id="btn-change">Change</button></div>';
+
+    $("btn-confirm").onclick = function() {
       showError("");
-      var r = cardRange();
-      var n = parseInt($("cardn").value, 10);
-      if (isNaN(n) || n < r.min || n > r.max) {
-        showError("Enter a valid card number.");
-        return;
-      }
-      api("/submit_card", {
+      api("/update_vote", {
         game_id: state.gameId,
         player_id: state.playerId,
-        card_number: n,
+        card_numbers: pendingVote,
       })
-        .then(function (data) {
+        .then(function(data) {
+          resetPendingVote();
           state.game = data.game;
           render();
         })
-        .catch(function (e) {
-          showError(e.message);
-        });
+        .catch(function(e) { showError(e.message); });
     };
-    $("btn-leave").onclick = function () {
-      clearSession();
+
+    $("btn-change").onclick = function() {
+      previewReady = false;
       render();
     };
   }
+
+  function renderVoteGridWithBanner(p, declaredCard, stepIndicator, votesPerPlayer) {
+    var cards = state.game.cards_on_table || [];
+    if (!cards.length) {
+      renderWaiting("No cards on the table yet.");
+      return;
+    }
+
+    if (pendingVote === null) pendingVote = [];
+
+    var canVote = actions().indexOf("submit_vote") !== -1 ||
+                  actions().indexOf("update_vote") !== -1;
+    var myCard = p.card_played;
+    var selected = pendingVote;
+
+    var gridInstruction = votesPerPlayer === 1
+      ? "Vote for the storyteller's card:"
+      : "Vote for up to " + votesPerPlayer + " cards" +
+        (selected.length > 0 ? " (" + selected.length + " selected):" : ":");
+
+    var btns = cards.map(function(c) {
+      var isOwnCard = c === myCard;
+      var isSelected = selected.indexOf(c) !== -1;
+      var isDisabled = !canVote || isOwnCard ||
+                       (!isSelected && selected.length >= votesPerPlayer);
+      var cls = "vote-btn" +
+                (isOwnCard ? " own-card" : "") +
+                (isSelected ? " selected" : "");
+      var label = isOwnCard ? c + "\u00a0(yours)" : String(c);
+      return (
+        '<button type="button" class="' + cls + '" data-card="' + c + '"' +
+        (isDisabled ? " disabled" : "") + '>' + label + '</button>'
+      );
+    }).join("");
+
+    var confirmBtn = (votesPerPlayer > 1 && selected.length >= 1)
+      ? '<button type="button" class="primary" id="btn-confirm-sel" style="margin-top:1rem">' +
+        "Confirm " + selected.length + " vote" + (selected.length !== 1 ? "s" : "") +
+        "</button>"
+      : "";
+
+    var declaredBanner = declaredCard != null
+      ? '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
+        '<div class="card-label">Your played card</div></div>'
+      : '';
+
+    $("main").innerHTML =
+      '<div class="panel">' + stepIndicator +
+      declaredBanner +
+      '<p class="muted">' + escapeHtml(gridInstruction) + '</p>' +
+      '<div class="vote-grid">' + btns + '</div>' +
+      confirmBtn +
+      '<button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
+
+    document.querySelectorAll(".vote-btn").forEach(function(btn) {
+      btn.onclick = function() {
+        if (btn.disabled) return;
+        var card = parseInt(btn.getAttribute("data-card"), 10);
+        var idx = pendingVote.indexOf(card);
+        if (idx !== -1) {
+          pendingVote.splice(idx, 1);
+        } else {
+          pendingVote.push(card);
+        }
+        if (votesPerPlayer === 1 && pendingVote.length === 1) {
+          previewReady = true;
+        }
+        if (votesPerPlayer > 1 && pendingVote.length >= votesPerPlayer) {
+          previewReady = true;
+        }
+        render();
+      };
+    });
+
+    var confirmSel = $("btn-confirm-sel");
+    if (confirmSel) {
+      confirmSel.onclick = function() {
+        if (pendingVote.length >= 1) {
+          previewReady = true;
+          render();
+        }
+      };
+    }
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Legacy renderVote - kept for backwards compatibility if needed
+  // ---------------------------------------------------------------------------
 
   function renderVote() {
     var p = me();
@@ -1094,15 +1390,14 @@
     }
 
     var ph = state.game.phase;
-    if (ph !== "VOTE") resetPendingVote();
+    // Reset pending vote when leaving TURN_SUBMISSION or when step changes
+    if (ph !== "TURN_SUBMISSION") resetPendingVote();
     if (ph === "LOBBY") {
       renderLobby();
     } else if (ph === "SELECT_NARRATOR") {
       renderSelectNarrator();
-    } else if (ph === "PLAY_CARDS") {
-      renderPlayCards();
-    } else if (ph === "VOTE") {
-      renderVote();
+    } else if (ph === "TURN_SUBMISSION") {
+      renderTurnSubmission();
     } else if (ph === "REVEAL_VOTES") {
       renderRevealVotes();
     } else if (ph === "SCORE_BASE") {

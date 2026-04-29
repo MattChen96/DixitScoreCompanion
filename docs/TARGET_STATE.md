@@ -13,8 +13,12 @@ caught up in these areas): multi-vote with `Player.votes` and
 until the host advances (no `votes_locked` / `lock_votes`); REVEAL_VOTES list
 UI; per-round `last_base_delta` / `last_bonus_delta` with progressive
 `+Δ` panels in `SCORE_BASE` / `SCORE_BONUS`; narrator must `confirm_narrator`
-before `SELECT_NARRATOR → PLAY_CARDS`. For authoritative behaviour use
-`CURRENT_STATE.md` and `API_SPECS.md`.
+before `SELECT_NARRATOR → TURN_SUBMISSION`; **unified turn submission flow**
+with `TURN_SUBMISSION` phase replacing separate `PLAY_CARDS` + `VOTE` phases,
+with `Game.submission_step` tracking `declaration` → `voting` sub-steps;
+**automatic progression** from declaration to voting when all cards validated;
+**wizard-like UI** with step indicator and declared-card banner during voting.
+For authoritative behaviour use `CURRENT_STATE.md` and `API_SPECS.md`.
 
 **Optional future polish** (not required to match the spec below): a dedicated
 `Game.scoring_step` field — the client currently uses `phase` and `last_*_delta`
@@ -27,9 +31,8 @@ instead.
 ```
 LOBBY
   → SELECT_NARRATOR
-  → PLAY_CARDS
-  → VOTE
-  → VOTE_PREVIEW        (UI state only)
+  → TURN_SUBMISSION     (sub-steps: declaration → voting)
+  → VOTE_PREVIEW        (UI state only, during voting sub-step)
   → REVEAL_VOTES
   → REVEAL_NARRATOR
   → SCORING             (progressive: base → bonus)
@@ -40,9 +43,13 @@ LOBBY
 
 Notes:
 
+* **TURN_SUBMISSION** is a unified phase with two server-tracked sub-steps:
+  - `declaration`: players declare which card they played (visual picker)
+  - `voting`: players vote for the narrator's card
+  The sub-step auto-advances when all cards are declared and validated.
 * **VOTE_PREVIEW** is a *client-side UI state*, not a server phase. It
   lives entirely between "player picks a card" and "player confirms the
-  vote". The server phase stays `VOTE` throughout.
+  vote". The server phase stays `TURN_SUBMISSION` (voting step) throughout.
 * **SCORING (progressive)** replaces the current two distinct phases
   `SCORE_BASE` + `SCORE_BONUS` **from the UI's point of view**. On the
   server they remain two separate steps (base, then bonus) so that
@@ -54,39 +61,51 @@ See `GAME_FLOW.md` for the full phase/transition/actor matrix.
 
 ---
 
-## 2. Voting system (target)
+## 2. Turn submission system (target)
 
+The turn submission is a single guided flow with two steps in the same UI:
+
+### 2.1 Declaration step
+* Player declares which card they played
+* Visual card-number picker (grid of 1-84)
+* Once all players submitted: validate declared cards
+* If duplicate card declarations exist: show error, repeat declaration step
+* When validation succeeds: auto-advance to voting step (no host action)
+
+### 2.2 Voting step
 * Each non-narrator player can cast **1 or 2 votes** per round. The
   server is the authority: `Player.votes` is a list of card numbers;
   `Game.votes_per_player` (1 or 2, set at `create_game`) caps its length.
-* **Votes are editable** for the whole `VOTE` phase. A player may add,
+* **Votes are editable** for the whole voting step. A player may add,
   remove, or replace entries via `submit_vote` / `update_vote` until
   the **host** advances to `REVEAL_VOTES`. Votes become final on that
-  transition — there is no separate host lock action in the current
-  implementation. See `CURRENT_STATE.md` §2.
+  transition — there is no separate host lock action.
 * A player **cannot vote their own card** (the "own card" slot is
   rendered but non-selectable).
 * A player **cannot vote the same card twice** when 2 votes are
   allowed — the two votes must be distinct card numbers.
 * **Before confirmation**, the selected cards are shown in a preview
-  (see §3).
+  along with the player's declared card for clarity.
 
 ---
 
 ## 3. Vote preview (UI state)
 
 After a player picks one or two card numbers, the app enters the
-**VOTE_PREVIEW** UI state (server phase still `VOTE`):
+**VOTE_PREVIEW** UI state (server phase stays `TURN_SUBMISSION`, voting step):
 
 * The selected card(s) are shown in **large format** (thumbnails or
   number tiles, bigger than the vote-grid buttons).
+* The player's **declared card** is shown in a banner to clearly
+  distinguish "your played card" from "your vote".
 * The UI supports displaying **one or two** selected cards side by side.
 * Two actions are offered:
-  * **Confirm** — typically commits via `POST /update_vote` (atomic list);
+  * **Confirm** — commits via `POST /update_vote` (atomic list);
     `POST /submit_vote` can add one card from the grid. The player
-    then sees the submitted-vote view until the host advances.
+    then sees the submitted-vote view (with persistent large vote
+    preview and declared-card banner) until the host advances.
   * **Change** — returns to the vote grid without submitting.
-* While the phase is still `VOTE`, the player can re-enter the preview
+* While the voting step is active, the player can re-enter the preview
   from the submitted screen to change their selection.
 
 This state is entirely client-side; no server event is required to

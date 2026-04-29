@@ -5,7 +5,7 @@ from backend.models.constants import (
     MIN_CARD_NUMBER,
 )
 from backend.models.game import Game, Player
-from backend.models.game_phase import GamePhase
+from backend.models.game_phase import GamePhase, SubmissionStep
 
 __all__ = [
     "GAME_PHASES",
@@ -15,4 +15,5 @@ __all__ = [
     "Game",
     "GamePhase",
     "Player",
+    "SubmissionStep",
 ]

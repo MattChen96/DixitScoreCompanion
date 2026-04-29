@@ -50,9 +50,9 @@ serialized, and the projection is augmented with `available_actions` and
 
 | Method | Path              | Status  | Body                                        | Returns / notes                           |
 |--------|-------------------|---------|---------------------------------------------|-------------------------------------------|
-| POST   | `/submit_card`    | current | `{game_id, player_id, card_number}`         | `{game}`. On duplicate card number: round is reset and `game_error` / `duplicate_cards` is broadcast (HTTP 200 with the post-reset `game`). |
-| POST   | `/submit_vote`    | current | `{game_id, player_id, card_number}`         | `{game}`. Appends `card_number` to `Player.votes`. Rejected if narrator, wrong phase, already at cap, duplicate, own card, or not on table. |
-| POST   | `/update_vote`    | current | `{game_id, player_id, card_numbers: list[int]}` | `{game}`. Replaces `Player.votes` with the given list. Rejected if wrong phase, narrator, `len(card_numbers) > Game.votes_per_player`, duplicates, own card, or any card not on the table. |
+| POST   | `/submit_card`    | current | `{game_id, player_id, card_number}`         | `{game}`. Only allowed in `TURN_SUBMISSION` phase with `submission_step == declaration`. On duplicate card number (detected when all players declared): declarations are reset and `game_error` / `duplicate_cards` is broadcast (HTTP 200 with the post-reset `game`). When all players declare unique cards, `submission_step` auto-advances to `voting`. |
+| POST   | `/submit_vote`    | current | `{game_id, player_id, card_number}`         | `{game}`. Only allowed in `TURN_SUBMISSION` phase with `submission_step == voting`. Appends `card_number` to `Player.votes`. Rejected if narrator, wrong phase/step, already at cap, duplicate, own card, or not on table. |
+| POST   | `/update_vote`    | current | `{game_id, player_id, card_numbers: list[int]}` | `{game}`. Only allowed in `TURN_SUBMISSION` phase with `submission_step == voting`. Replaces `Player.votes` with the given list. Rejected if wrong phase/step, narrator, `len(card_numbers) > Game.votes_per_player`, duplicates, own card, or any card not on the table. |
 
 Validation (Pydantic):
 
@@ -76,19 +76,22 @@ Validation (Pydantic):
 
 | From → To                          | Side effects                                                                                         | WS event emitted               |
 |------------------------------------|------------------------------------------------------------------------------------------------------|--------------------------------|
-| `PLAY_CARDS → VOTE`                | Defence-in-depth duplicate-card check; if duplicates are found, the round is reset (same as `/submit_card`). | `phase_changed` or `game_error`|
-| `VOTE → REVEAL_VOTES`              | Requires all active non-narrators to have voted at least 1 card. | `phase_changed`                |
-| `SELECT_NARRATOR → PLAY_CARDS`     | Requires `narrator_id` set, `narrator_confirmed == true`, and the host. | `phase_changed`                |
+| `SELECT_NARRATOR → TURN_SUBMISSION` | Requires `narrator_id` set, `narrator_confirmed == true`, and the host. Sets `submission_step = declaration`. | `phase_changed`                |
+| `TURN_SUBMISSION (voting) → REVEAL_VOTES` | Requires `submission_step == voting` and all active non-narrators to have voted at least 1 card. Clears `submission_step`. | `phase_changed`                |
 | `REVEAL_NARRATOR → SCORE_BASE`     | `rules_engine.calculate_scores(game)` applies base scoring; `score_base_applied = true`; `last_base_delta` populated. | `scores_updated`               |
 | `SCORE_BASE → SCORE_BONUS`         | `rules_engine.calculate_scores(game)` applies bonus scoring; `score_bonus_applied = true`; `last_bonus_delta` populated. | `scores_updated`               |
 | `SCORE_BONUS → LEADERBOARD`        | —                                                                                                    | `scores_updated`               |
-| `NEXT_ROUND → SELECT_NARRATOR`     | Round reset: clears `card_played`, `votes`, `cards_on_table`, scoring flags, `last_base_delta` / `last_bonus_delta`, `narrator_id`, `narrator_confirmed`. Scores are preserved. | `phase_changed`                |
+| `NEXT_ROUND → SELECT_NARRATOR`     | Round reset: clears `card_played`, `votes`, `cards_on_table`, scoring flags, `last_base_delta` / `last_bonus_delta`, `narrator_id`, `narrator_confirmed`, `submission_step`. Scores are preserved. | `phase_changed`                |
 | Any other transition               | —                                                                                                    | `phase_changed`                |
 
 * `LOBBY → SELECT_NARRATOR` uses only `POST /start_game` (not `/next_phase`).
-* `SELECT_NARRATOR → PLAY_CARDS` uses `POST /next_phase` **after** the
+* `SELECT_NARRATOR → TURN_SUBMISSION` uses `POST /next_phase` **after** the
   host has called `POST /select_narrator` and the chosen narrator has
   called `POST /confirm_narrator`.
+* **Declaration → Voting auto-advance**: The transition from
+  `submission_step=declaration` to `submission_step=voting` within
+  `TURN_SUBMISSION` phase is **automatic** when all players have declared
+  unique cards. No host action is required.
 
 ---
 
@@ -160,7 +163,7 @@ Notes:
 
 | Code               | Status  | Meaning                                                                                   |
 |--------------------|---------|-------------------------------------------------------------------------------------------|
-| `duplicate_cards`  | current | Two or more players selected the same card during `PLAY_CARDS`. The round has been reset; `game` reflects the post-reset state (every `card_played` and `cards_on_table` cleared, phase still `PLAY_CARDS`). |
+| `duplicate_cards`  | current | Two or more players selected the same card during `TURN_SUBMISSION` declaration step. Declarations have been reset; `game` reflects the post-reset state (every `card_played` and `cards_on_table` cleared, phase still `TURN_SUBMISSION`, `submission_step` still `declaration`). |
 
 Future `game_error` codes should follow the same shape.
 
@@ -174,7 +177,7 @@ Future `game_error` codes should follow the same shape.
   `POST /select_narrator`. The **designated narrator** may call
   `POST /confirm_narrator` (or WebSocket `confirm_narrator`) in
   `SELECT_NARRATOR` — that action does not change phase; it is required
-  before the host can advance `SELECT_NARRATOR → PLAY_CARDS` with
+  before the host can advance `SELECT_NARRATOR → TURN_SUBMISSION` with
   `/next_phase`.
 * `recovery_token` is never included in any broadcast or in any REST
   response apart from `/join_game`.

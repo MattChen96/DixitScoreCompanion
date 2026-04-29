@@ -4,7 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.models.game_phase import GamePhase
+from backend.models.game_phase import GamePhase, SubmissionStep
 
 
 class Player(BaseModel):
@@ -37,6 +37,10 @@ class Game(BaseModel):
     host_id: Optional[str] = None
     narrator_id: Optional[str] = None
     phase: GamePhase = GamePhase.LOBBY
+    # Sub-step within TURN_SUBMISSION phase. When phase != TURN_SUBMISSION,
+    # this field is None. When entering TURN_SUBMISSION, it starts as
+    # "declaration" and auto-advances to "voting" when all cards are validated.
+    submission_step: Optional[SubmissionStep] = None
     cards_on_table: list[int] = Field(default_factory=list)
     score_base_applied: bool = False
     score_bonus_applied: bool = False
@@ -55,6 +59,6 @@ class Game(BaseModel):
     # frontend can render the vote grid correctly without hardcoding.
     votes_per_player: int = 1
     # Set to True by POST /confirm_narrator (narrator only, SELECT_NARRATOR
-    # phase). The host can advance to PLAY_CARDS only after this is True.
+    # phase). The host can advance to TURN_SUBMISSION only after this is True.
     # Cleared on round reset (NEXT_ROUND → SELECT_NARRATOR).
     narrator_confirmed: bool = False

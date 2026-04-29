@@ -10,9 +10,8 @@ from backend.models.game_phase import GamePhase
 ALLOWED_TRANSITIONS: frozenset[tuple[GamePhase, GamePhase]] = frozenset(
     {
         (GamePhase.LOBBY, GamePhase.SELECT_NARRATOR),
-        (GamePhase.SELECT_NARRATOR, GamePhase.PLAY_CARDS),
-        (GamePhase.PLAY_CARDS, GamePhase.VOTE),
-        (GamePhase.VOTE, GamePhase.REVEAL_VOTES),
+        (GamePhase.SELECT_NARRATOR, GamePhase.TURN_SUBMISSION),
+        (GamePhase.TURN_SUBMISSION, GamePhase.REVEAL_VOTES),
         (GamePhase.REVEAL_VOTES, GamePhase.REVEAL_NARRATOR),
         (GamePhase.REVEAL_NARRATOR, GamePhase.SCORE_BASE),
         (GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS),
@@ -67,6 +66,8 @@ def advance_phase_by_host(game: Game, requester_id: str) -> Game:
     LOBBY cannot be advanced this way; use start_game instead.
     SELECT_NARRATOR requires the narrator to have confirmed first
     (enforced in game_service.next_phase before this is called).
+    TURN_SUBMISSION can only advance to REVEAL_VOTES when all players
+    have voted (voting sub-step complete).
     """
     current = game.phase
     if current in _NO_BLIND_ADVANCE:

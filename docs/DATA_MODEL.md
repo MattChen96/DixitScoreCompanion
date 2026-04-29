@@ -27,7 +27,7 @@ distinguishes **base** vs **bonus** scoring UIs from the current phase
 | `id`               | `str`            | current  | 8-char lowercase hex (uuid4 prefix). Stable for the life of the game. |
 | `nickname`         | `str`            | current  | 1–40 chars. Trimmed at the request boundary. Display name only — not used for identity. |
 | `score`            | `int`            | current  | Cumulative across rounds. Never reset during a game; only increments (or decrements, under `high_risk`) during `SCORE_BASE` / `SCORE_BONUS`. |
-| `card_played`      | `int \| null`    | current  | Card number this player played this round. Must be unique across all players during `PLAY_CARDS`; cleared on round reset. |
+| `card_played`      | `int \| null`    | current  | Card number this player declared this round. Must be unique across all players during `TURN_SUBMISSION` declaration step; cleared on round reset. |
 | `votes`            | `list[int]`      | current  | Card numbers the player voted this round. Length 0, 1, or 2 (capped by `Game.votes_per_player`). Duplicates are rejected; own card is rejected. Empty for the narrator. Cleared on round reset. |
 | `connected`        | `bool`           | current  | Liveness flag. `true` on join and on any inbound event; flipped to `false` by the heartbeat task after ~45 s of silence. Players are **never removed**. |
 | `last_seen`        | `float`          | current  | Unix timestamp (seconds). Updated by `ping`, `reconnect`, `submit_card`, `submit_vote`, `update_vote`, `confirm_narrator`, and other player-touching actions. |
@@ -44,11 +44,12 @@ Minimum Player shape required for any future state to remain valid:
 | Field                    | Type              | Status   | Description |
 |--------------------------|-------------------|----------|-------------|
 | `id`                     | `str`             | current  | 8-char uppercase hex (uuid4 prefix). |
-| `phase`                  | `GamePhase` (enum as string) | current | One of the ten phases from `GAME_FLOW.md` §2. Serialized as the string value (e.g. `"PLAY_CARDS"`). |
+| `phase`                  | `GamePhase` (enum as string) | current | One of the nine phases from `GAME_FLOW.md` §2. Serialized as the string value (e.g. `"TURN_SUBMISSION"`). |
+| `submission_step`        | `SubmissionStep \| null` (enum as string) | current | Sub-step within `TURN_SUBMISSION` phase: `"declaration"` or `"voting"`. `null` when not in `TURN_SUBMISSION`. Auto-advances from declaration to voting when all cards validated. |
 | `players`                | `list[Player]`    | current  | Insertion order = join order. |
 | `host_id`                | `str \| null`     | current  | Set to the first joiner; never changes. Only the host can trigger `POST /next_phase` and `POST /select_narrator`. |
 | `narrator_id`            | `str \| null`     | current  | Set by the host in `SELECT_NARRATOR` (`POST /select_narrator`); cleared on round reset. |
-| `narrator_confirmed`     | `bool`            | current  | `False` after `select_narrator`; set `True` by the designated narrator via `POST /confirm_narrator`. Host can advance `SELECT_NARRATOR → PLAY_CARDS` with `/next_phase` only when this is `True`. Cleared on round reset. |
+| `narrator_confirmed`     | `bool`            | current  | `False` after `select_narrator`; set `True` by the designated narrator via `POST /confirm_narrator`. Host can advance `SELECT_NARRATOR → TURN_SUBMISSION` with `/next_phase` only when this is `True`. Cleared on round reset. |
 | `cards_on_table`         | `list[int]`       | current  | Submission order. Cleared on round reset. |
 | `ruleset`                | `str`             | current  | Scoring ruleset (`"standard"` \| `"high_risk"` \| `"casual"`). Default `"standard"`. Immutable after game creation. |
 | `score_base_applied`     | `bool`            | current  | Idempotency guard: has base scoring been applied this round? |

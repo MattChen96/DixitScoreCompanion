@@ -8,13 +8,12 @@ behaviour see `TARGET_STATE.md`.
 
 ## 1. Game phases currently implemented
 
-Ten phases, in this strict order (loop at the end):
+Nine phases, in this strict order (loop at the end):
 
 ```
 LOBBY
   → SELECT_NARRATOR
-  → PLAY_CARDS
-  → VOTE
+  → TURN_SUBMISSION (declaration → voting)
   → REVEAL_VOTES
   → REVEAL_NARRATOR
   → SCORE_BASE
@@ -33,8 +32,8 @@ Who advances each phase:
 |-------------------|----------------------------------------------|------------|
 | LOBBY             | `POST /start_game` (≥ 3 players)             | Host       |
 | SELECT_NARRATOR   | `POST /select_narrator` (host picks) → narrator calls `POST /confirm_narrator` → `POST /next_phase` (host advances) | Host + Narrator |
-| PLAY_CARDS        | `POST /next_phase`                           | Host       |
-| VOTE              | `POST /next_phase`                           | Host       |
+| TURN_SUBMISSION (declaration) | Players declare cards → **auto-advances** when all declared + validated | Automatic |
+| TURN_SUBMISSION (voting) | `POST /next_phase`                      | Host       |
 | REVEAL_VOTES      | `POST /next_phase`                           | Host       |
 | REVEAL_NARRATOR   | `POST /next_phase` → triggers base scoring   | Host       |
 | SCORE_BASE        | `POST /next_phase` → triggers bonus scoring  | Host       |
@@ -47,25 +46,47 @@ Who advances each phase:
 In `SELECT_NARRATOR`, the host calls `POST /select_narrator` to pick the
 narrator (phase stays `SELECT_NARRATOR`), the narrator calls
 `POST /confirm_narrator`, then the host advances `SELECT_NARRATOR →
-PLAY_CARDS` with `POST /next_phase`.
+TURN_SUBMISSION` with `POST /next_phase`.
+
+The `TURN_SUBMISSION` phase has two sub-steps tracked by `Game.submission_step`:
+- `declaration`: All players (including narrator) declare their card numbers
+- `voting`: Non-narrator players vote for the narrator's card
+
+The transition from declaration to voting is **automatic** when all players
+have declared and no duplicate cards exist. If duplicates are detected,
+declarations are reset and players must re-declare.
 
 ---
 
-## 2. Voting system
+## 2. Turn submission system
+
+The `TURN_SUBMISSION` phase combines card declaration and voting into a
+single guided flow:
+
+### 2.1 Declaration step (`submission_step == "declaration"`)
+
+* All active players (including the narrator) declare which card they played
+* Each player calls `POST /submit_card {card_number}`
+* Card numbers must be unique across all players
+* When all active players have declared:
+  - If no duplicates: auto-advances to voting step
+  - If duplicates exist: all declarations are reset, players must re-declare
+
+### 2.2 Voting step (`submission_step == "voting"`)
 
 * **1 or 2 votes per non-narrator player** (`Player.votes: list[int]`).
   The cap is `Game.votes_per_player` (1 or 2, set at game creation, default 1).
   The narrator cannot vote.
-* **Votes are freely editable** throughout the VOTE phase. A player may
+* **Votes are freely editable** throughout the voting step. A player may
   call `POST /update_vote` to replace their vote list, or
   `POST /submit_vote` to add a single vote up to the cap. There is no
   manual lock step — votes become final when the host advances the phase.
-* **Phase transition gate**: the host can advance `VOTE → REVEAL_VOTES`
+* **Phase transition gate**: the host can advance `TURN_SUBMISSION → REVEAL_VOTES`
   via `POST /next_phase` only once every active non-narrator player has
-  cast at least one vote. The backend enforces this via
-  `available_actions` (which omits `next_phase` until the condition is
-  met); the frontend reflects it by enabling/disabling the Continue
-  button.
+  cast at least one vote (and `submission_step == voting`). The backend
+  enforces this via `available_actions` (which omits `next_phase` until the
+  condition is met); the frontend reflects it by enabling/disabling the
+  Continue button.
 * A player **cannot vote their own card** (server-enforced; own-card
   buttons are disabled and labelled `(yours)` in the frontend).
 * A player **cannot vote the same card twice** even when 2 votes are
@@ -73,7 +94,9 @@ PLAY_CARDS` with `POST /next_phase`.
 * The vote target must be a card number currently `on the table`.
 * **Vote preview (UI state)**: the frontend intercepts card selection and
   shows a VOTE_PREVIEW confirmation screen before calling `update_vote`.
-  Clicking "Change" returns to the grid; clicking "Confirm" submits.
+  The player's declared card is shown in a banner to distinguish it from
+  the vote selection. Clicking "Change" returns to the grid; clicking
+  "Confirm" submits.
 
 ---
 
@@ -132,10 +155,11 @@ Covered in detail in `APP_STATE.md`. In brief:
 * **Card numbers** are integers in `[1, 84]` (`MIN/MAX_CARD_NUMBER`).
   The frontend reads the range from `Game.card_range` in every
   broadcast; nothing is hardcoded client-side.
-* **Unique cards per round**: if two players submit the same number the
-  round is invalidated (every `card_played` and `cards_on_table` is
-  cleared, phase stays `PLAY_CARDS`) and the room is notified with a
-  `game_error`/`duplicate_cards` event.
+* **Unique cards per round**: if two players submit the same number during
+  the declaration step, all declarations are cleared and players must
+  re-declare. The phase stays `TURN_SUBMISSION` with `submission_step =
+  declaration`, and the room is notified with a `game_error`/`duplicate_cards`
+  event.
 * **Reconnect**: a `recovery_token` is returned only by `/join_game`,
   stored in `localStorage`, and replayed on every WebSocket open. A
   successful reconnect restores score, `card_played`, and `votes`
