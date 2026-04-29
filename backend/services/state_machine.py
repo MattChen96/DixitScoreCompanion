@@ -13,9 +13,8 @@ ALLOWED_TRANSITIONS: frozenset[tuple[GamePhase, GamePhase]] = frozenset(
         (GamePhase.SELECT_NARRATOR, GamePhase.TURN_SUBMISSION),
         (GamePhase.TURN_SUBMISSION, GamePhase.REVEAL_VOTES),
         (GamePhase.REVEAL_VOTES, GamePhase.REVEAL_NARRATOR),
-        (GamePhase.REVEAL_NARRATOR, GamePhase.SCORE_BASE),
-        (GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS),
-        (GamePhase.SCORE_BONUS, GamePhase.LEADERBOARD),
+        (GamePhase.REVEAL_NARRATOR, GamePhase.SCORING),
+        (GamePhase.SCORING, GamePhase.LEADERBOARD),
         (GamePhase.LEADERBOARD, GamePhase.NEXT_ROUND),
         (GamePhase.NEXT_ROUND, GamePhase.SELECT_NARRATOR),
     }

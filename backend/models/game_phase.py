@@ -14,8 +14,11 @@ class GamePhase(str, Enum):
     TURN_SUBMISSION = "TURN_SUBMISSION"
     REVEAL_VOTES = "REVEAL_VOTES"
     REVEAL_NARRATOR = "REVEAL_NARRATOR"
-    SCORE_BASE = "SCORE_BASE"
-    SCORE_BONUS = "SCORE_BONUS"
+    # SCORING is a unified phase that applies both base and bonus scoring and displays
+    # them together. The progressive reveal (base first, then bonus) happens in the UI
+    # via the Game.last_base_delta and Game.last_bonus_delta fields which are populated
+    # when entering SCORING. From the player perspective, one flow: see both scorings in one view.
+    SCORING = "SCORING"
     LEADERBOARD = "LEADERBOARD"
     NEXT_ROUND = "NEXT_ROUND"
 

@@ -11,13 +11,14 @@ features below without guessing. For what actually runs today see
 caught up in these areas): multi-vote with `Player.votes` and
 `Game.votes_per_player` (1 or 2); VOTE_PREVIEW client UI; votes editable
 until the host advances (no `votes_locked` / `lock_votes`); REVEAL_VOTES list
-UI; per-round `last_base_delta` / `last_bonus_delta` with progressive
-`+Δ` panels in `SCORE_BASE` / `SCORE_BONUS`; narrator must `confirm_narrator`
-before `SELECT_NARRATOR → TURN_SUBMISSION`; **unified turn submission flow**
-with `TURN_SUBMISSION` phase replacing separate `PLAY_CARDS` + `VOTE` phases,
-with `Game.submission_step` tracking `declaration` → `voting` sub-steps;
-**automatic progression** from declaration to voting when all cards validated;
-**wizard-like UI** with step indicator and declared-card banner during voting.
+UI; per-round `last_base_delta` / `last_bonus_delta` with **unified scoring
+screen** showing both `+Δ` base and bonus panels together in `SCORING` phase;
+narrator must `confirm_narrator` before `SELECT_NARRATOR → TURN_SUBMISSION`;
+**unified turn submission flow** with `TURN_SUBMISSION` phase replacing
+separate `PLAY_CARDS` + `VOTE` phases, with `Game.submission_step` tracking
+`declaration` → `voting` sub-steps; **automatic progression** from declaration
+to voting when all cards validated; **wizard-like UI** with step indicator and
+declared-card banner during voting.
 For authoritative behaviour use `CURRENT_STATE.md` and `API_SPECS.md`.
 
 **Optional future polish** (not required to match the spec below): a dedicated
@@ -35,7 +36,7 @@ LOBBY
   → VOTE_PREVIEW        (UI state only, during voting sub-step)
   → REVEAL_VOTES
   → REVEAL_NARRATOR
-  → SCORING             (progressive: base → bonus)
+  → SCORING             (unified: base + bonus together)
   → LEADERBOARD
   → NEXT_ROUND
   → SELECT_NARRATOR     (loop)
@@ -50,14 +51,10 @@ Notes:
 * **VOTE_PREVIEW** is a *client-side UI state*, not a server phase. It
   lives entirely between "player picks a card" and "player confirms the
   vote". The server phase stays `TURN_SUBMISSION` (voting step) throughout.
-* **SCORING (progressive)** replaces the current two distinct phases
-  `SCORE_BASE` + `SCORE_BONUS` **from the UI's point of view**. On the
-  server they remain two separate steps (base, then bonus) so that
-  idempotency and the rules-engine contract do not change. The host
-  advances once to reveal base points and once more to reveal bonus
-  points.
-
-See `GAME_FLOW.md` for the full phase/transition/actor matrix.
+* **SCORING** is a unified phase that combines base and bonus scoring into
+  one view. The host advances once from SCORING to LEADERBOARD. Both base
+  and bonus points are displayed in visually separated sections, with
+  optional progressive reveal in the UI.
 
 ---
 
@@ -136,40 +133,36 @@ The REVEAL_VOTES screen must visualise **who voted what**:
 
 * Scoring logic is **unchanged**. It lives in the rules engine
   (`backend/rules/*`) and is ruleset-dependent. See `GAME_FLOW.md`.
-* `SCORE_BASE` and `SCORE_BONUS` remain two separate phases on the
-  server. Idempotency guards (`score_base_applied`,
-  `score_bonus_applied`) are preserved.
+* `SCORING` is a single phase on the server. Both base and bonus scoring
+  are applied when entering this phase. Idempotency guards
+  (`score_base_applied`, `score_bonus_applied`) are preserved.
 
 ### 5.2 UI representation
 
-From the client's point of view, scoring is **progressive** and
-displays **only the deltas**:
+From the client's point of view, scoring is **unified** and displays
+**both base and bonus deltas together**:
 
-* After entering `SCORE_BASE` (host advance), the app renders a
-  **base-points panel**: a list of `nickname +Δ` entries (e.g.
-  `"Player A +3"`, `"Player B +0"`). Players with no change may be
-  omitted or dimmed.
-* After entering `SCORE_BONUS` (next host advance), the app renders a
-  **bonus-points panel** in the same format.
-* The UI uses the **phase** (`SCORE_BASE` vs `SCORE_BONUS`) plus
-  `last_base_delta` / `last_bonus_delta` (no `scoring_step` field on
-  `Game` today).
-* Both panels show **only numbers**. No explanation of the scoring
-  rules is shown in the UI (no "because all/none guessed", no "+1 per
-  vote received"). The help, if any, lives outside the gameplay
-  screens.
-* The cumulative total is revealed on `LEADERBOARD`, which is a
-  separate phase and a separate screen.
+* After entering `SCORING` (host advance from `REVEAL_NARRATOR`), the app
+  renders a **unified scoring panel**: a list of player deltas for both
+  base and bonus sections.
+* The two sections are visually separated with section headers:
+  - "Base points this round" showing base deltas
+  - "Bonus points this round" showing bonus deltas
+* Players are sorted by delta descending within each section.
+* Players with no change may be omitted or dimmed.
+* The UI uses the **phase** (`SCORING`) plus `last_base_delta` /
+  `last_bonus_delta` (these fields are populated when entering SCORING).
+* Both panels show **only numbers**. No explanation of the scoring rules
+  is shown in the UI.
+* The cumulative total is revealed on `LEADERBOARD`, which is a separate
+  phase and a separate screen.
 
 ### 5.3 Required wire data
 
 **Implemented:** `last_base_delta` and `last_bonus_delta` on `Game`,
-populated by the rules engine and cleared on round reset. The
-`scores_updated` WebSocket event carries the updated `game` blob.
-
-**Optional later:** a `scoring_step` field or `scoring_events` stream
-if a future client needs an extra discriminator beyond `phase` — not
-present in the current model.
+populated by the rules engine when entering `SCORING` and cleared on
+round reset. The `scores_updated` WebSocket event carries the updated
+`game` blob.
 
 ---
 

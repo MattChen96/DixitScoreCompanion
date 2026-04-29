@@ -16,8 +16,7 @@ LOBBY
   → TURN_SUBMISSION (declaration → voting)
   → REVEAL_VOTES
   → REVEAL_NARRATOR
-  → SCORE_BASE
-  → SCORE_BONUS
+  → SCORING (base + bonus unified)
   → LEADERBOARD
   → NEXT_ROUND
   → SELECT_NARRATOR   (loop)
@@ -35,9 +34,8 @@ Who advances each phase:
 | TURN_SUBMISSION (declaration) | Players declare cards → **auto-advances** when all declared + validated | Automatic |
 | TURN_SUBMISSION (voting) | `POST /next_phase`                      | Host       |
 | REVEAL_VOTES      | `POST /next_phase`                           | Host       |
-| REVEAL_NARRATOR   | `POST /next_phase` → triggers base scoring   | Host       |
-| SCORE_BASE        | `POST /next_phase` → triggers bonus scoring  | Host       |
-| SCORE_BONUS       | `POST /next_phase`                           | Host       |
+| REVEAL_NARRATOR   | `POST /next_phase` → triggers scoring        | Host       |
+| SCORING           | `POST /next_phase` → applies base and bonus scoring, displays both in unified view | Host |
 | LEADERBOARD       | `POST /next_phase`                           | Host       |
 | NEXT_ROUND        | `POST /next_phase` → round reset             | Host       |
 
@@ -107,7 +105,7 @@ single guided flow:
 All scoring lives in the rules engine
 (`backend/rules/<ruleset>.py` + `backend/rules/config/<ruleset>.json`)
 and is invoked from `game_service.next_phase` when the transition lands
-on `SCORE_BASE` or `SCORE_BONUS`.
+on `SCORING`.
 
 Three rulesets are available; the game picks one at creation time
 (`Game.ruleset`, default `"standard"`).
@@ -118,9 +116,9 @@ Three rulesets are available; the game picks one at creation time
 | `high_risk` | narrator **-2**, others +3       | narrator +5, correct +5, others 0  | +2 per vote on their card                   |
 | `casual`    | narrator +1, others +2           | narrator +2, correct +2, others 0  | +1 per vote on their card                   |
 
-Base scoring happens on entering `SCORE_BASE`; bonus scoring on entering
-`SCORE_BONUS`. Idempotency flags (`score_base_applied`,
-`score_bonus_applied`) prevent double application.
+Both base and bonus scoring happen when entering the `SCORING` phase.
+Idempotency flags (`score_base_applied`, `score_bonus_applied`) prevent
+double application on reconnect or replay.
 
 The narrator is **excluded from bonus scoring** — they do not receive
 points for votes cast on their card. Only non-narrator players earn
@@ -128,12 +126,13 @@ bonus points.
 
 ### 3.2 How points are displayed
 
-* `SCORE_BASE` renders a **base-points panel**: a list of
-  `nickname +N` rows sorted by delta descending. Players with a zero
-  delta are shown dimmed. (`frontend/app.js:renderScoring("base")`)
-* `SCORE_BONUS` renders the same layout as a **bonus-points panel**.
-  (`frontend/app.js:renderScoring("bonus")`)
-* Both panels show only numbers — no explanation of the scoring rules.
+* `SCORING` renders a **unified scoring panel** showing both base and
+  bonus points in visually separated sections:
+  - **Base points section**: `nickname +N` rows sorted by delta descending
+  - **Bonus points section**: `nickname +N` rows sorted by delta descending
+  - Players with a zero delta are shown dimmed in each section
+  - (`frontend/app.js:renderScoring()`)
+* Both sections show only numbers — no explanation of the scoring rules.
 * `LEADERBOARD` renders sorted cumulative totals
   (`frontend/app.js:renderLeaderboard`).
 * `REVEAL_NARRATOR` and `NEXT_ROUND` render a generic "Host advances

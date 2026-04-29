@@ -78,9 +78,8 @@ Validation (Pydantic):
 |------------------------------------|------------------------------------------------------------------------------------------------------|--------------------------------|
 | `SELECT_NARRATOR → TURN_SUBMISSION` | Requires `narrator_id` set, `narrator_confirmed == true`, and the host. Sets `submission_step = declaration`. | `phase_changed`                |
 | `TURN_SUBMISSION (voting) → REVEAL_VOTES` | Requires `submission_step == voting` and all active non-narrators to have voted at least 1 card. Clears `submission_step`. | `phase_changed`                |
-| `REVEAL_NARRATOR → SCORE_BASE`     | `rules_engine.calculate_scores(game)` applies base scoring; `score_base_applied = true`; `last_base_delta` populated. | `scores_updated`               |
-| `SCORE_BASE → SCORE_BONUS`         | `rules_engine.calculate_scores(game)` applies bonus scoring; `score_bonus_applied = true`; `last_bonus_delta` populated. | `scores_updated`               |
-| `SCORE_BONUS → LEADERBOARD`        | —                                                                                                    | `scores_updated`               |
+| `REVEAL_NARRATOR → SCORING`        | `rules_engine.calculate_scores(game)` applies both base and bonus scoring; `score_base_applied` and `score_bonus_applied` flags set to true; `last_base_delta` and `last_bonus_delta` populated. | `scores_updated`               |
+| `SCORING → LEADERBOARD`            | —                                                                                                    | `scores_updated`               |
 | `NEXT_ROUND → SELECT_NARRATOR`     | Round reset: clears `card_played`, `votes`, `cards_on_table`, scoring flags, `last_base_delta` / `last_bonus_delta`, `narrator_id`, `narrator_confirmed`, `submission_step`. Scores are preserved. | `phase_changed`                |
 | Any other transition               | —                                                                                                    | `phase_changed`                |
 
@@ -152,7 +151,7 @@ Notes:
 | `phase_changed`        | current | `{event, game}`                                                           | Room-wide after a non-scoring phase transition.       |
 | `card_submitted`       | current | `{event, game}`                                                           | Room-wide after a card is submitted (REST or WS).     |
 | `vote_submitted`       | current | `{event, game}`                                                           | Room-wide after a vote is submitted (`submit_vote`) or updated (`update_vote`). |
-| `scores_updated`       | current | `{event, game}`                                                           | Room-wide after entering `SCORE_BASE`, `SCORE_BONUS`, or `LEADERBOARD`. Progressive scoring UIs use `game.phase` with `last_base_delta` / `last_bonus_delta` (and cumulative `players[].score` on `LEADERBOARD`). There is no `scoring_step` field. |
+| `scores_updated`       | current | `{event, game}`                                                           | Room-wide after entering `SCORING` or `LEADERBOARD`. Scoring UIs use `game.phase` (`SCORING`) with `last_base_delta` / `last_bonus_delta` to show both base and bonus points in a unified view (and cumulative `players[].score` on `LEADERBOARD`). |
 | `game_error`           | current | `{event: "game_error", error: <code>, message: <string>, game: <Game>}`    | Room-wide gameplay errors. Current codes: `duplicate_cards`. |
 | `player_reconnected`   | current | `{event, game}`                                                           | Room-wide after a successful `reconnect`.             |
 | `player_disconnected`  | current | `{event, game}`                                                           | Room-wide when the heartbeat task flips one or more players to `connected=false`. |

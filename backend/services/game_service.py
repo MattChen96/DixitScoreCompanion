@@ -250,7 +250,7 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     if old_phase == GamePhase.TURN_SUBMISSION and new_phase == GamePhase.REVEAL_VOTES:
         game.submission_step = None
 
-    if new_phase in (GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS):
+    if new_phase in (GamePhase.SCORING,):
         _engine_for(game).calculate_scores(game)
     elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.SELECT_NARRATOR:
         _reset_round_after_next(game)
@@ -469,8 +469,7 @@ def available_actions(game: Game) -> list[str]:
     elif phase in (
         GamePhase.REVEAL_VOTES,
         GamePhase.REVEAL_NARRATOR,
-        GamePhase.SCORE_BASE,
-        GamePhase.SCORE_BONUS,
+        GamePhase.SCORING,
         GamePhase.NEXT_ROUND,
         GamePhase.LEADERBOARD,
     ):

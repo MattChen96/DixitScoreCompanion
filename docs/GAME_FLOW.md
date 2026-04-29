@@ -39,8 +39,7 @@ SELECT_NARRATOR
 TURN_SUBMISSION      (sub-steps: declaration → voting)
 REVEAL_VOTES
 REVEAL_NARRATOR
-SCORE_BASE
-SCORE_BONUS
+SCORING              (base + bonus unified)
 LEADERBOARD
 NEXT_ROUND
 ```
@@ -59,9 +58,8 @@ Every `Game` starts in `LOBBY` and loops from `NEXT_ROUND` back to
 | `TURN_SUBMISSION` (declaration) | `POST /submit_card {card_number}` — each active player including the narrator picks a **unique** card number | — (no host action) | Auto-advance when all declared + validated | `TURN_SUBMISSION` (voting) |
 | `TURN_SUBMISSION` (voting) | `POST /submit_vote {card_number}` or `POST /update_vote {card_numbers}` — non-narrator only; freely editable until host advances | `POST /next_phase` | `/next_phase` (validation: all active non-narrators have ≥1 vote) | `REVEAL_VOTES` |
 | `REVEAL_VOTES`    | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `REVEAL_NARRATOR`|
-| `REVEAL_NARRATOR` | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **base** scores via rules engine) | `SCORE_BASE`     |
-| `SCORE_BASE`      | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **bonus** scores via rules engine) | `SCORE_BONUS`    |
-| `SCORE_BONUS`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `LEADERBOARD`    |
+| `REVEAL_NARRATOR` | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **base and bonus** scores via rules engine) | `SCORING`     |
+| `SCORING`         | —                                                | `POST /next_phase`                             | `/next_phase` (displays unified scoring screen)     | `LEADERBOARD`    |
 | `LEADERBOARD`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `NEXT_ROUND`     |
 | `NEXT_ROUND`      | —                                                | `POST /next_phase`                             | `/next_phase` (round reset: see §7) | `SELECT_NARRATOR` |
 
@@ -122,14 +120,13 @@ Entered when a player taps a card in the vote grid.
 |---------------------|------------------------------|
 | `REVEAL_VOTES`      | `renderRevealVotes` — per-player vote list; narrator’s card is not shown as a vote. |
 | `REVEAL_NARRATOR`   | `renderHostContinue` — generic "host advances when ready" (physical table reveal). |
-| `SCORE_BASE`        | `renderScoring("base")` — rows from `Game.last_base_delta`.  |
-| `SCORE_BONUS`       | `renderScoring("bonus")` — rows from `Game.last_bonus_delta`.  |
+| `SCORING`           | `renderScoring()` — unified view with base and bonus points in separate sections. |
 | `LEADERBOARD`       | `renderLeaderboard` — sorted cumulative `Player.score` totals.  |
 | `NEXT_ROUND`        | `renderHostContinue` — generic "host advances when ready".   |
 
-The client does **not** use a `scoring_step` field on `Game` — it uses
-`game.phase` (`SCORE_BASE` vs `SCORE_BONUS`) to pick the panel and the
-relevant `last_*_delta` map.
+The client uses `game.phase` (`SCORING`) along with `last_base_delta`
+and `last_bonus_delta` to render both base and bonus scoring in the
+unified view.
 
 ---
 
@@ -166,16 +163,20 @@ for the life of the game.
 
 The **standard** (default) ruleset implements classic Dixit scoring:
 
-* **Base** — on entering `SCORE_BASE`:
+* **Base** — on entering `SCORING`:
   * If **all** or **none** of the non-narrator players guessed the
     narrator's card: narrator gets **0**, every other player gets
     **+2**.
   * Otherwise: narrator gets **+3**, every correct guesser gets **+3**,
     others get **0**.
-* **Bonus** — on entering `SCORE_BONUS`:
+* **Bonus** — on entering `SCORING`:
   * Every **non-narrator** player gets **+1 per vote received** on the
     card they played this round. The narrator is excluded from bonus
     scoring.
+
+Both base and bonus scoring are applied simultaneously when entering the
+`SCORING` phase. Idempotency flags (`score_base_applied`,
+`score_bonus_applied`) guard against double application on reconnect.
 
 Other rulesets adjust these numbers (see
 `backend/rules/config/high_risk.json`,

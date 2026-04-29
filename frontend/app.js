@@ -1202,20 +1202,45 @@
     };
   }
 
-  function renderScoring(step) {
+  function renderScoring() {
     var game = state.game;
-    var deltas = step === "base" ? (game.last_base_delta || {}) : (game.last_bonus_delta || {});
-    var label = step === "base" ? "Base points this round" : "Bonus points this round";
+    var baseDeltas = game.last_base_delta || {};
+    var bonusDeltas = game.last_bonus_delta || {};
 
-    var rows = game.players
+    // Build base points section
+    var baseRows = game.players
       .slice()
       .sort(function (a, b) {
-        var da = deltas[a.id] || 0;
-        var db = deltas[b.id] || 0;
+        var da = baseDeltas[a.id] || 0;
+        var db = baseDeltas[b.id] || 0;
         return db - da || a.id.localeCompare(b.id);
       })
       .map(function (p) {
-        var delta = deltas[p.id] || 0;
+        var delta = baseDeltas[p.id] || 0;
+        var name = escapeHtml(p.nickname) + (p.id === state.playerId ? " (you)" : "");
+        var pts = (delta > 0 ? "+" : "") + delta;
+        return (
+          '<div class="score-row"><span>' +
+          name +
+          "</span><strong" +
+          (delta === 0 ? ' class="muted"' : "") +
+          ">" +
+          pts +
+          "</strong></div>"
+        );
+      })
+      .join("");
+
+    // Build bonus points section
+    var bonusRows = game.players
+      .slice()
+      .sort(function (a, b) {
+        var da = bonusDeltas[a.id] || 0;
+        var db = bonusDeltas[b.id] || 0;
+        return db - da || a.id.localeCompare(b.id);
+      })
+      .map(function (p) {
+        var delta = bonusDeltas[p.id] || 0;
         var name = escapeHtml(p.nickname) + (p.id === state.playerId ? " (you)" : "");
         var pts = (delta > 0 ? "+" : "") + delta;
         return (
@@ -1234,14 +1259,19 @@
     var hostBtn = isHost()
       ? '<button type="button" class="primary" id="btn-next"' +
         (canNext ? "" : " disabled") +
-        ">Continue</button>"
+        ">Continue to Leaderboard</button>"
       : "";
 
     $("main").innerHTML =
-      '<div class="panel"><p class="muted">' +
-      label +
-      "</p>" +
-      rows +
+      '<div class="panel">' +
+      '<div class="scoring-section">' +
+      '<p class="muted">Base points this round</p>' +
+      baseRows +
+      '</div>' +
+      '<div class="scoring-section">' +
+      '<p class="muted">Bonus points this round</p>' +
+      bonusRows +
+      '</div>' +
       hostBtn +
       '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
 
@@ -1400,10 +1430,8 @@
       renderTurnSubmission();
     } else if (ph === "REVEAL_VOTES") {
       renderRevealVotes();
-    } else if (ph === "SCORE_BASE") {
-      renderScoring("base");
-    } else if (ph === "SCORE_BONUS") {
-      renderScoring("bonus");
+    } else if (ph === "SCORING") {
+      renderScoring();
     } else if (
       ph === "REVEAL_NARRATOR" ||
       ph === "NEXT_ROUND"
