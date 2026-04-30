@@ -57,6 +57,7 @@ Minimum Player shape required for any future state to remain valid:
 | `votes_per_player`       | `int`             | current  | Max votes a non-narrator player may cast (1 or 2). Set at game creation (`POST /create_game {votes_per_player}`). Default `1`. Exposed in every broadcast so the frontend can render the vote grid correctly. |
 | `last_base_delta`        | `dict[str, int]`  | current  | Per-player point change from the last `SCORE_BASE` application, keyed by `player_id`. Populated by the rules engine; cleared on round reset. Used for the base scoring UI. |
 | `last_bonus_delta`       | `dict[str, int]`  | current  | Per-player point change from the last `SCORE_BONUS` application, keyed by `player_id`. Populated by the rules engine; cleared on round reset. Used for the bonus scoring UI. |
+| `qr_code`                | `str \| null`     | current  | Base64 PNG data URI (`data:image/png;base64,...`) for a QR code linking to `https://{DIXIT_APP_DOMAIN}/join/{game_id}`. Set once at game creation; `null` only if generation failed. **Stripped by `game_wire`** — never included in WS broadcasts or any REST response other than `POST /create_game`. |
 
 ---
 
@@ -78,7 +79,15 @@ All other fields in the wire `game` object come from the serialized
 
 ---
 
-## 4. In-memory store
+## 4. Environment variables
+
+| Variable           | Default       | Description |
+|--------------------|---------------|-------------|
+| `DIXIT_APP_DOMAIN` | `"localhost"` | Domain used to build the URL embedded in the QR code: `https://{domain}/join/{game_id}`. Override in production so QR codes point to the public URL. |
+
+---
+
+## 5. In-memory store
 
 ```python
 # backend/store.py

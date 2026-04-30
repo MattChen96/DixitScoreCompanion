@@ -47,6 +47,16 @@ def serve_index():
     return FileResponse(_FRONTEND_DIR / "index.html")
 
 
+@app.get("/join/{game_id}")
+def serve_join(game_id: str):
+    """Deep-link entry point embedded in QR codes.
+
+    The frontend reads the path at startup, extracts the game_id, and
+    pre-fills the room code input — no separate page is needed.
+    """
+    return FileResponse(_FRONTEND_DIR / "index.html")
+
+
 @app.get("/app.js")
 def serve_app_js():
     return FileResponse(

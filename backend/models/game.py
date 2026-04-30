@@ -62,3 +62,8 @@ class Game(BaseModel):
     # phase). The host can advance to TURN_SUBMISSION only after this is True.
     # Cleared on round reset (NEXT_ROUND → SELECT_NARRATOR).
     narrator_confirmed: bool = False
+    # QR code as a base64 PNG data URI (data:image/png;base64,...).
+    # Generated once at game creation. Stripped by game_wire so it is never
+    # included in WebSocket broadcasts or any REST response other than
+    # POST /create_game.
+    qr_code: Optional[str] = None

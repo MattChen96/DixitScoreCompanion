@@ -124,7 +124,7 @@ def create_game(body: CreateGameRequest = CreateGameRequest()) -> dict[str, Any]
         )
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
-    return {"game_id": game.id}
+    return {"game_id": game.id, "qr_code": game.qr_code}
 
 
 @router.post("/join_game")

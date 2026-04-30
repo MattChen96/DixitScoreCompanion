@@ -75,7 +75,10 @@ def game_wire(game: Game) -> dict[str, Any]:
     """
     data = game.model_dump(
         mode="json",
-        exclude={"players": {"__all__": {"recovery_token"}}},
+        exclude={
+            "players": {"__all__": {"recovery_token"}},
+            "qr_code": True,
+        },
     )
     data["cards_on_table"] = sorted(data["cards_on_table"])
     data["available_actions"] = game_service.available_actions(game)

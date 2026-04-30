@@ -173,13 +173,36 @@ Covered in detail in `APP_STATE.md`. In brief:
 
 ---
 
-## 5. Known limitations and gaps
+## 5. QR code lobby flow
 
-### 5.1 Gameplay limitations
+### 5.1 Game creation with QR code
+
+* `POST /create_game` now returns `{game_id, qr_code}` where `qr_code` is a base64 PNG data URI.
+* The QR encodes `https://{DIXIT_APP_DOMAIN}/join/{game_id}`. `DIXIT_APP_DOMAIN` defaults to `"localhost"`.
+* The frontend shows a **"Lobby Creata"** screen with the QR image, the room code in text, a "Copia link" button, and a "Prosegui" button.
+* `qr_code` is stored in `Game.qr_code` but is **stripped by `game_wire`** — it is never sent in WS broadcasts.
+
+### 5.2 Joining via QR scan
+
+* The join screen has a **"Scansiona QR"** button that opens the camera using `getUserMedia`.
+* Frames are decoded with **jsQR 1.4.0** (CDN, no build step).
+* On successful decode the game_id is extracted from the URL and pre-filled in the room code field.
+* Scanning requires **HTTPS** on mobile (WebRTC constraint).
+
+### 5.3 Deep-link URL
+
+* The backend serves `frontend/index.html` on `GET /join/{game_id}`.
+* When the frontend loads on a `/join/{game_id}` path it detects it at startup, saves the game_id in `state._pendingJoinId`, and calls `history.replaceState` to clean the URL. The room code field is then pre-filled.
+
+---
+
+## 6. Known limitations and gaps
+
+### 6.1 Gameplay limitations
 
 * **Host disconnect stalls the game.** No host migration / handoff.
 
-### 5.2 UX gaps
+### 6.2 UX gaps
 
 * `REVEAL_VOTES`, `SCORE_BASE`, `SCORE_BONUS`, and `LEADERBOARD` each
   have their own screen (per-player vote list, base deltas, bonus deltas,
@@ -196,7 +219,7 @@ Covered in detail in `APP_STATE.md`. In brief:
 * No rule-picker UI. `POST /create_game {ruleset}` works, but the
   frontend only creates games with the default ruleset.
 
-### 5.3 Engineering gaps
+### 6.3 Engineering gaps
 
 * No automated test suite in the repository (correctness is verified
   via a smoke script referenced in `APP_STATE.md` and by manual play).

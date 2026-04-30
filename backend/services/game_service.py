@@ -6,9 +6,14 @@ phase, delegates phase transitions to :mod:`backend.services.state_machine`,
 and scoring to the rules engine (:mod:`backend.rules.rules_loader`).
 """
 
+import base64
+import io
+import os
 import time
 import uuid
 from typing import Optional
+
+import qrcode
 
 from backend import store
 from backend.models.constants import MAX_CARD_NUMBER, MIN_CARD_NUMBER
@@ -125,6 +130,25 @@ def _require_card_number(card_number: int) -> None:
         )
 
 
+def _generate_qr_code(game_id: str) -> str:
+    """Return a base64 PNG data URI for a QR code linking to the game lobby.
+
+    The URL encoded in the QR is ``https://{domain}/join/{game_id}`` where
+    ``domain`` is read from the ``DIXIT_APP_DOMAIN`` environment variable
+    (defaults to ``"localhost"`` for local development).
+
+    The returned string starts with ``data:image/png;base64,`` and can be
+    used directly as an ``<img src="...">`` attribute.
+    """
+    domain = os.environ.get("DIXIT_APP_DOMAIN", "localhost")
+    url = f"https://{domain}/join/{game_id}"
+    img = qrcode.make(url)
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
 def create_game(ruleset: str = "standard", votes_per_player: int = 1) -> Game:
     # Fail fast on an unknown ruleset name so we never create a game
     # that would later fail at start or scoring time. The resulting
@@ -135,6 +159,7 @@ def create_game(ruleset: str = "standard", votes_per_player: int = 1) -> Game:
 
     game_id = uuid.uuid4().hex[:8].upper()
     game = Game(id=game_id, ruleset=ruleset, votes_per_player=votes_per_player)
+    game.qr_code = _generate_qr_code(game_id)
     store.set_game(game_id, game)
     return game
 

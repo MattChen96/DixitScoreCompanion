@@ -22,6 +22,9 @@
     reconnecting: false, // true between ws.onopen and first game_state
     ws: null,
     newRoomCode: null,
+    newQrCode: null,       // base64 PNG data URI returned by /create_game
+    _pendingJoinId: null,  // game_id extracted from /join/{id} deep-link URL
+    _qrStream: null,       // active MediaStream while QR scanner is open
     reconnectTimer: null,
     pingTimer: null,
   };
@@ -286,21 +289,120 @@
     pill.classList.remove("hidden");
   }
 
+  // ---------------------------------------------------------------------------
+  // QR scanner helpers
+  // ---------------------------------------------------------------------------
+
+  function _stopQrStream() {
+    if (state._qrStream) {
+      state._qrStream.getTracks().forEach(function (t) { t.stop(); });
+      state._qrStream = null;
+    }
+    var vid = $("qr-video");
+    if (vid) { vid.srcObject = null; vid.style.display = "none"; }
+  }
+
+  function startQrScan(onResult) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showError("Camera access not supported in this browser.");
+      return;
+    }
+    // Show the video element inside the panel (positioned in the page flow)
+    var scanPanel = $("qr-scan-panel");
+    if (scanPanel) { scanPanel.style.display = ""; }
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: "environment" } })
+      .then(function (stream) {
+        state._qrStream = stream;
+        var vid = $("qr-video");
+        var canvas = $("qr-canvas");
+        vid.srcObject = stream;
+        vid.style.display = "block";
+        vid.setAttribute("playsinline", true);
+        vid.play();
+
+        var ctx = canvas.getContext("2d");
+        var scanning = true;
+
+        function tick() {
+          if (!scanning) return;
+          if (vid.readyState === vid.HAVE_ENOUGH_DATA) {
+            canvas.width = vid.videoWidth;
+            canvas.height = vid.videoHeight;
+            ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+            var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            var code = window.jsQR && window.jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: "dontInvert",
+            });
+            if (code) {
+              scanning = false;
+              _stopQrStream();
+              onResult(code.data);
+              return;
+            }
+          }
+          requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      })
+      .catch(function (err) {
+        _stopQrStream();
+        showError("Camera error: " + err.message);
+      });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lobby-created screen (shown to the game creator before they join)
+  // ---------------------------------------------------------------------------
+
+  function renderLobbyCreated(gameId, qrCode) {
+    var joinUrl = location.protocol + "//" + location.host + "/join/" + encodeURIComponent(gameId);
+    $("main").innerHTML =
+      '<div class="panel">' +
+      "<h2 style='font-size:1rem;margin:0 0 0.75rem'>Lobby creata!</h2>" +
+      (qrCode
+        ? '<img src="' + qrCode + '" alt="QR code" style="width:100%;max-width:220px;display:block;margin:0 auto 1rem;border-radius:8px;" />'
+        : "") +
+      '<p class="muted" style="text-align:center;margin-bottom:1rem">Room code: <strong>' + escapeHtml(gameId) + "</strong></p>" +
+      '<button type="button" class="ghost" id="btn-copy-link">Copia link</button>' +
+      '<button type="button" class="primary" id="btn-lobby-proceed" style="margin-top:0.5rem">Prosegui</button>' +
+      "</div>";
+    $("btn-copy-link").onclick = function () {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(joinUrl).then(function () {
+          $("btn-copy-link").textContent = "Copiato!";
+          setTimeout(function () {
+            if ($("btn-copy-link")) $("btn-copy-link").textContent = "Copia link";
+          }, 2000);
+        }).catch(function () {
+          showError("Impossibile copiare: " + joinUrl);
+        });
+      } else {
+        showError("Copia manualmente: " + joinUrl);
+      }
+    };
+    $("btn-lobby-proceed").onclick = function () {
+      state._pendingJoinId = gameId;
+      renderJoin();
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Join screen
+  // ---------------------------------------------------------------------------
+
   function renderJoin() {
-    var code = state.newRoomCode
-      ? '<p class="muted">Share this room code: <strong>' +
-        escapeHtml(state.newRoomCode) +
-        "</strong></p>"
-      : "";
+    var prefillCode = state._pendingJoinId || state.newRoomCode || "";
     $("main").innerHTML =
       '<div class="panel">' +
       "<label>Nickname</label>" +
       '<input type="text" id="nick" maxlength="40" autocomplete="nickname" />' +
       "<label>Room code</label>" +
-      '<input type="text" id="room" maxlength="32" pattern="[0-9a-fA-F]*" autocomplete="off" />' +
+      '<input type="text" id="room" maxlength="32" pattern="[0-9a-fA-F]*" autocomplete="off" value="' + escapeHtml(prefillCode) + '" />' +
       '<button type="button" class="primary" id="btn-join">Join game</button>' +
-      '<button type="button" class="ghost" id="btn-create">Create new game</button>' +
-      code +
+      '<button type="button" class="ghost" id="btn-scan-qr">Scansiona QR</button>' +
+      '<button type="button" class="ghost" id="btn-create">Crea nuova partita</button>' +
+      '<div id="qr-scan-panel" style="display:none;margin-top:0.75rem"></div>' +
       "</div>";
     $("btn-join").onclick = function () {
       showError("");
@@ -317,6 +419,7 @@
           state.recoveryToken = data.recovery_token;
           state.game = data.game;
           state.newRoomCode = null;
+          state._pendingJoinId = null;
           saveSession();
           connectWs();
           render();
@@ -325,13 +428,27 @@
           showError(e.message);
         });
     };
+    $("btn-scan-qr").onclick = function () {
+      showError("");
+      $("qr-scan-panel").style.display = "";
+      startQrScan(function (decoded) {
+        // Extract game_id from URL like https://host/join/GAMEID
+        var match = decoded.match(/\/join\/([0-9a-fA-F]{1,32})(?:[/?#]|$)/);
+        if (match) {
+          state._pendingJoinId = match[1].toUpperCase();
+        } else {
+          state._pendingJoinId = decoded; // fallback: treat whole string as room code
+        }
+        renderJoin();
+      });
+    };
     $("btn-create").onclick = function () {
       showError("");
       api("/create_game")
         .then(function (data) {
           state.newRoomCode = data.game_id;
-          $("room").value = data.game_id;
-          renderJoin();
+          state.newQrCode = data.qr_code || null;
+          renderLobbyCreated(data.game_id, state.newQrCode);
         })
         .catch(function (e) {
           showError(e.message);
@@ -1445,6 +1562,15 @@
   }
 
   function boot() {
+    // Check for deep-link path /join/{game_id} (from a scanned QR code).
+    // Pre-fill the room code field and clean the URL so that a refresh
+    // or share no longer re-triggers the join flow.
+    var pathMatch = location.pathname.match(/^\/join\/([0-9a-fA-F]{1,32})(?:\/|$)/);
+    if (pathMatch) {
+      state._pendingJoinId = pathMatch[1].toUpperCase();
+      history.replaceState(null, "", "/");
+    }
+
     var gid = localStorage.getItem(STORAGE_GAME);
     var pid = localStorage.getItem(STORAGE_PLAYER);
     var tok = localStorage.getItem(STORAGE_TOKEN);

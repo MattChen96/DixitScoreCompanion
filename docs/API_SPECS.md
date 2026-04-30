@@ -34,12 +34,13 @@ serialized, and the projection is augmented with `available_actions` and
 | GET    | `/health`    | current | —                    | `{"status": "ok"}`                                       |
 | GET    | `/`          | current | —                    | Serves `frontend/index.html`                             |
 | GET    | `/app.js`    | current | —                    | Serves `frontend/app.js`                                 |
+| GET    | `/join/{game_id}` | current | —               | Serves `frontend/index.html` (deep-link entry point). The frontend detects the `/join/{game_id}` path at startup and pre-fills the room code field with the extracted `game_id`. |
 
 ### 1.2 Game lifecycle
 
 | Method | Path              | Status  | Body                                        | Returns                                   |
 |--------|-------------------|---------|---------------------------------------------|-------------------------------------------|
-| POST   | `/create_game`    | current | `{ruleset?: str, votes_per_player?: int}` (defaults `"standard"`, `1`; `votes_per_player` 1 or 2) | `{"game_id": str}` — fails `400` on unknown `ruleset` |
+| POST   | `/create_game`    | current | `{ruleset?: str, votes_per_player?: int}` (defaults `"standard"`, `1`; `votes_per_player` 1 or 2) | `{"game_id": str, "qr_code": str}` — `qr_code` is a base64 PNG data URI (`data:image/png;base64,...`) encoding the URL `https://{DIXIT_APP_DOMAIN}/join/{game_id}`. Fails `400` on unknown `ruleset`. `qr_code` is **never** included in WS broadcasts or any other REST response (stripped by `game_wire`). |
 | POST   | `/join_game`      | current | `{game_id, nickname}`                       | `{player_id, game_id, recovery_token, game}` — the **only** response carrying `recovery_token` |
 | POST   | `/start_game`     | current | `{game_id, player_id}` (host only)          | `{game}` — requires ≥ 3 players, transitions `LOBBY → SELECT_NARRATOR` |
 | POST   | `/select_narrator`| current | `{game_id, player_id, narrator_id}` (host)  | `{game}` — **phase stays** `SELECT_NARRATOR`; sets `narrator_id`, `narrator_confirmed = false`. Room WS: `narrator_selected` |

@@ -291,12 +291,16 @@
     }
     .hidden { display: none !important; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
 <body>
   <h1>Dixit companion</h1>
   <div id="phase-pill" class="phase-pill hidden"></div>
   <main id="main"></main>
   <p id="error" class="error hidden" role="alert"></p>
+  <!-- Hidden elements used by the QR scanner (camera + canvas) -->
+  <video id="qr-video" style="display:none" playsinline muted></video>
+  <canvas id="qr-canvas" style="display:none"></canvas>
   <script src="/app.js" defer></script>
 </body>
 </html>
