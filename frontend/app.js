@@ -1682,7 +1682,7 @@
       ph === "REVEAL_NARRATOR" ||
       ph === "NEXT_ROUND"
     ) {
-      renderHostContinue("Follow the table in the room. Host advances when ready.");
+      renderWaiting("Loading…");
     } else if (ph === "LEADERBOARD") {
       renderLeaderboard();
     } else {
