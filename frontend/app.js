@@ -1066,12 +1066,6 @@
       );
     }).join("");
 
-    var confirmBtn = (votesPerPlayer > 1 && selected.length >= 1)
-      ? '<button type="button" class="primary" id="btn-confirm-sel" style="margin-top:1rem">' +
-        "Confirm " + selected.length + " vote" + (selected.length !== 1 ? "s" : "") +
-        "</button>"
-      : "";
-
     var declaredBanner = declaredCard != null
       ? '<div class="declared-card-banner">' +
         '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
@@ -1083,7 +1077,6 @@
       declaredBanner +
       '<p class="muted">' + escapeHtml(gridInstruction) + '</p>' +
       '<div class="vote-grid">' + btns + '</div>' +
-      confirmBtn +
       '<button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
 
     document.querySelectorAll(".vote-btn").forEach(function(btn) {
@@ -1096,25 +1089,29 @@
         } else {
           pendingVote.push(card);
         }
-        if (votesPerPlayer === 1 && pendingVote.length === 1) {
-          previewReady = true;
-        }
-        if (votesPerPlayer > 1 && pendingVote.length >= votesPerPlayer) {
-          previewReady = true;
+        // Auto-submit as soon as the player has selected enough cards
+        if (pendingVote.length >= votesPerPlayer) {
+          showError("");
+          var votesToSend = pendingVote.slice();
+          api("/update_vote", {
+            game_id: state.gameId,
+            player_id: state.playerId,
+            card_numbers: votesToSend,
+          })
+            .then(function(data) {
+              resetPendingVote();
+              state.game = data.game;
+              render();
+            })
+            .catch(function(e) {
+              showError(e.message);
+              render();
+            });
+          return;
         }
         render();
       };
     });
-
-    var confirmSel = $("btn-confirm-sel");
-    if (confirmSel) {
-      confirmSel.onclick = function() {
-        if (pendingVote.length >= 1) {
-          previewReady = true;
-          render();
-        }
-      };
-    }
 
     $("btn-leave").onclick = function() { clearSession(); render(); };
   }
