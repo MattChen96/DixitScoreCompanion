@@ -78,15 +78,13 @@ class StandardDixitRules(RulesEngine):
         transition into SCORE_BASE or SCORE_BONUS has committed, so
         ``game.phase`` already reflects what we're about to score.
         """
-        if game.phase == GamePhase.SCORE_BASE:
-            self._apply_score_base(game)
-        elif game.phase == GamePhase.SCORE_BONUS:
-            self._apply_score_bonus(game)
-        else:
+        if game.phase != GamePhase.SCORING:
             raise ValueError(
-                "calculate_scores is only valid in SCORE_BASE or SCORE_BONUS "
-                f"phase; current phase is {game.phase.value}."
+                "calculate_scores is only valid in SCORING phase; "
+                f"current phase is {game.phase.value}."
             )
+        self._apply_score_base(game)
+        self._apply_score_bonus(game)
 
     def validate_move(self, game: "Game", move: dict[str, Any]) -> None:
         # Move validation is still centralised in game_service (phase gates,
@@ -163,11 +161,6 @@ class StandardDixitRules(RulesEngine):
         self._validate_unique_cards_played(game)
 
     def _apply_score_base(self, game: "Game") -> None:
-        if game.phase != GamePhase.SCORE_BASE:
-            raise ValueError(
-                f"Base scores can only be applied in SCORE_BASE phase; "
-                f"current phase is {game.phase.value}."
-            )
         if game.score_base_applied:
             raise ValueError("Base scores already applied for this round.")
 
@@ -198,11 +191,6 @@ class StandardDixitRules(RulesEngine):
         game.score_base_applied = True
 
     def _apply_score_bonus(self, game: "Game") -> None:
-        if game.phase != GamePhase.SCORE_BONUS:
-            raise ValueError(
-                f"Bonus scores can only be applied in SCORE_BONUS phase; "
-                f"current phase is {game.phase.value}."
-            )
         if not game.score_base_applied:
             raise ValueError("Cannot apply bonus before base scores have been applied.")
         if game.score_bonus_applied:

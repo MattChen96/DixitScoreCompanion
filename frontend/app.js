@@ -352,37 +352,42 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Lobby-created screen (shown to the game creator before they join)
+  // Create screen (host enters nickname before creating a game)
   // ---------------------------------------------------------------------------
 
-  function renderLobbyCreated(gameId, qrCode) {
-    var joinUrl = location.protocol + "//" + location.host + "/join/" + encodeURIComponent(gameId);
-    $("main").innerHTML =
+  function renderCreate() {
+    $('main').innerHTML =
       '<div class="panel">' +
-      "<h2 style='font-size:1rem;margin:0 0 0.75rem'>Lobby creata!</h2>" +
-      (qrCode
-        ? '<img src="' + qrCode + '" alt="QR code" style="width:100%;max-width:220px;display:block;margin:0 auto 1rem;border-radius:8px;" />'
-        : "") +
-      '<p class="muted" style="text-align:center;margin-bottom:1rem">Room code: <strong>' + escapeHtml(gameId) + "</strong></p>" +
-      '<button type="button" class="ghost" id="btn-copy-link">Copia link</button>' +
-      '<button type="button" class="primary" id="btn-lobby-proceed" style="margin-top:0.5rem">Prosegui</button>' +
-      "</div>";
-    $("btn-copy-link").onclick = function () {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(joinUrl).then(function () {
-          $("btn-copy-link").textContent = "Copiato!";
-          setTimeout(function () {
-            if ($("btn-copy-link")) $("btn-copy-link").textContent = "Copia link";
-          }, 2000);
-        }).catch(function () {
-          showError("Impossibile copiare: " + joinUrl);
-        });
-      } else {
-        showError("Copia manualmente: " + joinUrl);
+      '<h2 style="font-size:1rem;margin:0 0 0.75rem">Crea nuova partita</h2>' +
+      '<label>Nickname</label>' +
+      '<input type="text" id="create-nick" maxlength="40" autocomplete="nickname" />' +
+      '<button type="button" class="primary" id="btn-do-create">Crea</button>' +
+      '<button type="button" class="ghost" id="btn-back-join" style="margin-top:0.5rem">Indietro</button>' +
+      '</div>';
+    $('btn-do-create').onclick = function () {
+      showError('');
+      var nick = $('create-nick').value.trim();
+      if (!nick) {
+        showError('Inserisci un nickname.');
+        return;
       }
+      api('/create_game', { nickname: nick })
+        .then(function (data) {
+          state.gameId = data.game_id;
+          state.playerId = data.player_id;
+          state.recoveryToken = data.recovery_token;
+          state.newQrCode = data.qr_code || null;
+          state.newRoomCode = null;
+          saveSession();
+          connectWs();
+          render();
+        })
+        .catch(function (e) {
+          showError(e.message);
+        });
     };
-    $("btn-lobby-proceed").onclick = function () {
-      state._pendingJoinId = gameId;
+    $('btn-back-join').onclick = function () {
+      showError('');
       renderJoin();
     };
   }
@@ -444,15 +449,7 @@
     };
     $("btn-create").onclick = function () {
       showError("");
-      api("/create_game")
-        .then(function (data) {
-          state.newRoomCode = data.game_id;
-          state.newQrCode = data.qr_code || null;
-          renderLobbyCreated(data.game_id, state.newQrCode);
-        })
-        .catch(function (e) {
-          showError(e.message);
-        });
+      renderCreate();
     };
   }
 
@@ -483,32 +480,51 @@
   function renderLobby() {
     if (isHost()) {
       var canStart = actions().indexOf("start_game") !== -1;
-      $("main").innerHTML =
-        '<div class="panel"><p class="muted">You are the host. When everyone has joined, start the game.</p>' +
+      var joinUrl = location.protocol + "//" + location.host + "/join/" + encodeURIComponent(state.gameId);
+      var qrHtml = state.newQrCode
+        ? '<img src="' + state.newQrCode + '" alt="QR code" style="width:100%;max-width:180px;display:block;margin:0.75rem auto;border-radius:8px;" />'
+        : "";
+      $('main').innerHTML =
+        '<div class="panel">' +
+        '<p class="muted">You are the host. When everyone has joined, start the game.</p>' +
+        qrHtml +
+        '<p class="muted" style="text-align:center;margin:0 0 0.25rem">Room code: <strong>' + escapeHtml(state.gameId) + '</strong></p>' +
+        '<button type="button" class="ghost" id="btn-copy-link" style="margin-bottom:0.75rem">Copia link</button>' +
         '<ul class="list" id="plist"></ul>' +
         '<button type="button" class="primary" id="btn-start"' +
-        (canStart ? "" : " disabled") +
-        ">Start game</button>" +
-        '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
-      renderPlayerList($("plist"));
-      $("btn-start").onclick = function () {
-        if (actions().indexOf("start_game") === -1) return;
-        showError("");
-        api("/start_game", { game_id: state.gameId, player_id: state.playerId })
+        (canStart ? '' : ' disabled') +
+        '>Start game</button>' +
+        '<button type="button" class="ghost" id="btn-leave">Leave</button>' +
+        '</div>';
+      renderPlayerList($('plist'));
+      $('btn-copy-link').onclick = function () {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(joinUrl).then(function () {
+            $('btn-copy-link').textContent = 'Copiato!';
+            setTimeout(function () {
+              if ($('btn-copy-link')) $('btn-copy-link').textContent = 'Copia link';
+            }, 2000);
+          }).catch(function () { showError('Copia manualmente: ' + joinUrl); });
+        } else {
+          showError('Copia manualmente: ' + joinUrl);
+        }
+      };
+      $('btn-start').onclick = function () {
+        if (actions().indexOf('start_game') === -1) return;
+        showError('');
+        api('/start_game', { game_id: state.gameId, player_id: state.playerId })
           .then(function (data) {
             state.game = data.game;
             render();
           })
-          .catch(function (e) {
-            showError(e.message);
-          });
+          .catch(function (e) { showError(e.message); });
       };
-      $("btn-leave").onclick = function () {
+      $('btn-leave').onclick = function () {
         clearSession();
         render();
       };
     } else {
-      renderWaiting("Waiting for the host to start…");
+      renderWaiting('Waiting for the host to start…');
     }
   }
 

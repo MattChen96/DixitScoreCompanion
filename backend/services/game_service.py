@@ -88,6 +88,7 @@ def _reset_round_after_next(game: Game) -> None:
     for p in game.players:
         p.card_played = None
         p.votes.clear()
+        p.connected = True
     game.cards_on_table.clear()
     game.score_base_applied = False
     game.score_bonus_applied = False
@@ -165,6 +166,33 @@ def create_game(ruleset: str = "standard", votes_per_player: int = 1) -> Game:
     return game
 
 
+def _update_card_range(game: Game) -> None:
+    """Update card_range based on the current number of players."""
+    num_players = len(game.players)
+    game.card_range = {"min": 1, "max": max(num_players, 1)}
+
+
+def create_game_with_host(
+    nickname: str, ruleset: str = "standard", votes_per_player: int = 1
+) -> tuple[Game, Player]:
+    """Create a new game and add the creator as the first player (host)."""
+    _engine_cache.setdefault(ruleset, load_rules(ruleset))
+    if votes_per_player not in (1, 2):
+        raise ValueError("votes_per_player must be 1 or 2")
+
+    game_id = uuid.uuid4().hex[:8].upper()
+    game = Game(id=game_id, ruleset=ruleset, votes_per_player=votes_per_player)
+    game.qr_code = _generate_qr_code(game_id)
+
+    player_id = uuid.uuid4().hex[:8]
+    player = Player(id=player_id, nickname=nickname)
+    game.host_id = player_id
+    game.players.append(player)
+    _update_card_range(game)
+    store.set_game(game_id, game)
+    return game, player
+
+
 def get_game(game_id: str) -> Optional[Game]:
     return store.get_game(game_id)
 
@@ -181,6 +209,7 @@ def join_game(game_id: str, nickname: str) -> tuple[Game, Player]:
         game.host_id = player_id
 
     game.players.append(player)
+    _update_card_range(game)
     return game, player
 
 
@@ -241,16 +270,16 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     old_phase = game.phase
 
     # TURN_SUBMISSION can only advance to REVEAL_VOTES when in voting sub-step
-    # and all active non-narrator players have voted.
+    # and all non-narrator players have voted.
     if old_phase == GamePhase.TURN_SUBMISSION:
         if game.submission_step != SubmissionStep.VOTING:
             raise ValueError(
                 "Cannot advance to reveal: voting phase has not started yet"
             )
-        live_voters = [
-            p for p in active_players(game) if p.id != game.narrator_id
+        all_voters = [
+            p for p in game.players if p.id != game.narrator_id
         ]
-        if not live_voters or not all(len(p.votes) >= 1 for p in live_voters):
+        if not all_voters or not all(len(p.votes) >= 1 for p in all_voters):
             raise ValueError(
                 "Cannot advance to reveal: not all players have voted"
             )
@@ -278,9 +307,9 @@ def next_phase(game_id: str, requester_id: str) -> Game:
 
 
 def _all_active_declared(game: Game) -> bool:
-    """Check if all active players have declared a card."""
-    live = active_players(game)
-    return bool(live) and all(p.card_played is not None for p in live)
+    """Check if all players have declared a card."""
+    players = game.players
+    return bool(players) and all(p.card_played is not None for p in players)
 
 
 def _try_advance_to_voting(game: Game) -> bool:
@@ -315,7 +344,15 @@ def submit_card(game_id: str, player_id: str, card_number: int) -> Game:
     """
     _require_card_number(card_number)
     game = _require_game(game_id)
-    
+
+    # Validate against the game's dynamic card range
+    cr = game.card_range
+    if card_number < cr["min"] or card_number > cr["max"]:
+        raise ValueError(
+            f"card_number must be between {cr['min']} and {cr['max']} "
+            f"for this game, got {card_number}."
+        )
+
     # Must be in TURN_SUBMISSION phase with declaration sub-step
     if game.phase != GamePhase.TURN_SUBMISSION:
         raise ValueError(
@@ -474,10 +511,10 @@ def available_actions(game: Game) -> list[str]:
         elif game.submission_step == SubmissionStep.VOTING:
             actions.append("submit_vote")
             actions.append("update_vote")
-            live_voters = [
-                p for p in active_players(game) if p.id != game.narrator_id
+            all_voters = [
+                p for p in game.players if p.id != game.narrator_id
             ]
-            if live_voters and all(len(p.votes) >= 1 for p in live_voters):
+            if all_voters and all(len(p.votes) >= 1 for p in all_voters):
                 actions.append("next_phase")
 
     elif phase in (

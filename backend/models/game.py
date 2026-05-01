@@ -71,3 +71,6 @@ class Game(BaseModel):
     # included in WebSocket broadcasts or any REST response other than
     # POST /create_game.
     qr_code: Optional[str] = None
+    # Dynamic card range: updated whenever a player joins/leaves the lobby.
+    # min is always 1; max equals the current number of players.
+    card_range: dict[str, int] = Field(default_factory=lambda: {"min": 1, "max": 84})

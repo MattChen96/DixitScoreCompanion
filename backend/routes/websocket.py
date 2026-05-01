@@ -25,7 +25,6 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from backend.models.constants import MAX_CARD_NUMBER, MIN_CARD_NUMBER
 from backend.models.game import Game
 from backend.services import game_service
 
@@ -82,7 +81,7 @@ def game_wire(game: Game) -> dict[str, Any]:
     )
     data["cards_on_table"] = sorted(data["cards_on_table"])
     data["available_actions"] = game_service.available_actions(game)
-    data["card_range"] = {"min": MIN_CARD_NUMBER, "max": MAX_CARD_NUMBER}
+    data["card_range"] = game.card_range
     return data
 
 

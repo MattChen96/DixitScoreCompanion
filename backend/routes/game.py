@@ -37,6 +37,7 @@ class JoinGameRequest(_Body):
 
 
 class CreateGameRequest(_Body):
+    nickname: NicknameField
     ruleset: str = Field(default="standard", min_length=1, max_length=32)
     votes_per_player: int = Field(default=1, ge=1, le=2)
 
@@ -112,14 +113,21 @@ def list_rulesets() -> list[dict[str, str]]:
 
 
 @router.post("/create_game")
-def create_game(body: CreateGameRequest = CreateGameRequest()) -> dict[str, Any]:
+def create_game(body: CreateGameRequest) -> dict[str, Any]:
     try:
-        game = game_service.create_game(
-            ruleset=body.ruleset, votes_per_player=body.votes_per_player
+        game, player = game_service.create_game_with_host(
+            nickname=body.nickname,
+            ruleset=body.ruleset,
+            votes_per_player=body.votes_per_player,
         )
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
-    return {"game_id": game.id, "qr_code": game.qr_code}
+    return {
+        "game_id": game.id,
+        "player_id": player.id,
+        "recovery_token": player.recovery_token,
+        "qr_code": game.qr_code,
+    }
 
 
 @router.post("/join_game")

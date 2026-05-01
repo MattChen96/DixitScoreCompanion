@@ -43,18 +43,10 @@ def _expire_stale_players(game: Game, now: float) -> bool:
 
 
 async def _scan_once() -> None:
-    # Imported lazily to avoid a module-import cycle between the route module
-    # and the service layer at app startup.
-    from backend.routes import websocket as ws_routes
-
-    now = time.time()
-    # Snapshot to be safe against concurrent mutations of the store.
-    for game in list(store.games.values()):
-        if _expire_stale_players(game, now):
-            try:
-                await ws_routes.notify_game_room(game, "player_disconnected")
-            except Exception:  # pragma: no cover - best-effort broadcast
-                logger.exception("heartbeat: broadcast failed for game %s", game.id)
+    # Players are never auto-disconnected: they are physically present in the
+    # same room and will always use Leave explicitly if they want to exit.
+    # The heartbeat loop is kept alive for future use but performs no action.
+    pass
 
 
 async def heartbeat_loop() -> None:
