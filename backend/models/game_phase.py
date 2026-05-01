@@ -5,7 +5,7 @@ class GamePhase(str, Enum):
     """Phases from .docs/GAME_FLOW.md (definition order = play order)."""
 
     LOBBY = "LOBBY"
-    SELECT_NARRATOR = "SELECT_NARRATOR"
+    NARRATOR_ORDERING = "NARRATOR_ORDERING"
     # TURN_SUBMISSION is a unified phase replacing the old PLAY_CARDS + VOTE.
     # It has two internal sub-steps tracked by Game.submission_step:
     # - "declaration": players declare which card they played

@@ -75,12 +75,15 @@ def _reset_declarations(game: Game) -> None:
 
 
 def _reset_round_after_next(game: Game) -> None:
-    """Clear per-round fields on NEXT_ROUND → SELECT_NARRATOR.
+    """Clear per-round fields on NEXT_ROUND → TURN_SUBMISSION.
 
     This is round lifecycle, not scoring — it runs after both scoring
     passes have already been applied and prepares a fresh round. Keeping
     it here (rather than in the rules engine) avoids widening the
     engine's surface area for logic that isn't rule-dependent.
+
+    Note: narrator_id is NOT cleared here; it is rotated from
+    narrator_queue in next_phase after this function returns.
     """
     for p in game.players:
         p.card_played = None
@@ -90,8 +93,6 @@ def _reset_round_after_next(game: Game) -> None:
     game.score_bonus_applied = False
     game.last_base_delta.clear()
     game.last_bonus_delta.clear()
-    game.narrator_id = None
-    game.narrator_confirmed = False
     game.submission_step = None
 
 
@@ -198,41 +199,39 @@ def start_game(game_id: str, requester_id: str) -> Game:
     # straight cache hit.
     _engine_for(game)
 
-    transition_phase(game, requester_id, GamePhase.SELECT_NARRATOR)
+    transition_phase(game, requester_id, GamePhase.NARRATOR_ORDERING)
     return game
 
 
-def select_narrator(game_id: str, requester_id: str, narrator_id: str) -> Game:
-    game = _require_game(game_id)
-    if requester_id != game.host_id:
-        raise ValueError("Only the host can select the narrator")
-    _require_phase(game, GamePhase.SELECT_NARRATOR, "Selecting the narrator")
+def set_narrator_queue(game_id: str, requester_id: str, narrator_ids: list[str]) -> Game:
+    """Set the narrator rotation order for the whole game (NARRATOR_ORDERING phase).
 
-    if not any(p.id == narrator_id for p in game.players):
-        raise ValueError("Narrator is not a player in this game")
-
-    game.narrator_id = narrator_id
-    game.narrator_confirmed = False
-    return game
-
-
-def confirm_narrator(game_id: str, requester_id: str) -> Game:
-    """Narrator explicitly accepts their role before PLAY_CARDS begins.
-
-    Only the designated narrator may call this. The host can then advance
-    ``SELECT_NARRATOR → PLAY_CARDS`` via ``POST /next_phase``.
+    Validates that narrator_ids contains all players exactly once, sets the
+    narrator_queue, and auto-transitions the game to TURN_SUBMISSION with
+    the first player as narrator.
     """
     game = _require_game(game_id)
-    _require_phase(game, GamePhase.SELECT_NARRATOR, "Confirming narrator role")
+    if requester_id != game.host_id:
+        raise ValueError("Only the host can set the narrator order")
+    _require_phase(game, GamePhase.NARRATOR_ORDERING, "Setting narrator queue")
 
-    if game.narrator_id is None:
-        raise ValueError("No narrator has been selected yet")
-    if requester_id != game.narrator_id:
-        raise ValueError("Only the selected narrator can confirm their role")
-    if game.narrator_confirmed:
-        raise ValueError("Narrator has already confirmed")
+    player_ids = {p.id for p in game.players}
+    if len(narrator_ids) != len(game.players):
+        raise ValueError(
+            f"narrator_ids must include all {len(game.players)} players"
+        )
+    if len(narrator_ids) != len(set(narrator_ids)):
+        raise ValueError("narrator_ids must not contain duplicates")
+    if set(narrator_ids) != player_ids:
+        raise ValueError("narrator_ids must contain exactly the IDs of all current players")
 
-    game.narrator_confirmed = True
+    game.narrator_queue = list(narrator_ids)
+    game.narrator_queue_index = 0
+    game.narrator_id = narrator_ids[0]
+    # Auto-transition to TURN_SUBMISSION
+    transition_phase(game, requester_id, GamePhase.TURN_SUBMISSION)
+    game.submission_step = SubmissionStep.DECLARATION
+    store.set_game(game_id, game)
     return game
 
 
@@ -240,14 +239,6 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     game = _require_game(game_id)
 
     old_phase = game.phase
-
-    if old_phase == GamePhase.SELECT_NARRATOR:
-        if game.narrator_id is None:
-            raise ValueError("A narrator must be selected before advancing")
-        if not game.narrator_confirmed:
-            raise ValueError(
-                "The narrator must confirm their role before the host can advance"
-            )
 
     # TURN_SUBMISSION can only advance to REVEAL_VOTES when in voting sub-step
     # and all active non-narrator players have voted.
@@ -267,18 +258,21 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     advance_phase_by_host(game, requester_id)
     new_phase = game.phase
 
-    # Set submission_step when entering TURN_SUBMISSION
-    if old_phase == GamePhase.SELECT_NARRATOR and new_phase == GamePhase.TURN_SUBMISSION:
-        game.submission_step = SubmissionStep.DECLARATION
-
     # Clear submission_step when leaving TURN_SUBMISSION
     if old_phase == GamePhase.TURN_SUBMISSION and new_phase == GamePhase.REVEAL_VOTES:
         game.submission_step = None
 
     if new_phase in (GamePhase.SCORING,):
         _engine_for(game).calculate_scores(game)
-    elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.SELECT_NARRATOR:
+    elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.TURN_SUBMISSION:
         _reset_round_after_next(game)
+        # Rotate narrator from the queue
+        if game.narrator_queue:
+            game.narrator_queue_index = (
+                game.narrator_queue_index + 1
+            ) % len(game.narrator_queue)
+            game.narrator_id = game.narrator_queue[game.narrator_queue_index]
+        game.submission_step = SubmissionStep.DECLARATION
 
     return game
 
@@ -457,11 +451,11 @@ def available_actions(game: Game) -> list[str]:
     on top where needed.
 
     Action names map 1-to-1 to API call names:
-    * ``"start_game"``      — LOBBY, ≥3 players present
-    * ``"select_narrator"`` — SELECT_NARRATOR phase active
-    * ``"submit_card"``     — TURN_SUBMISSION phase, declaration sub-step
-    * ``"submit_vote"``     — TURN_SUBMISSION phase, voting sub-step
-    * ``"next_phase"``      — host may advance; all round conditions satisfied
+    * ``"start_game"``        — LOBBY, ≥3 players present
+    * ``"set_narrator_queue"`` — NARRATOR_ORDERING phase, host only
+    * ``"submit_card"``       — TURN_SUBMISSION phase, declaration sub-step
+    * ``"submit_vote"``       — TURN_SUBMISSION phase, voting sub-step
+    * ``"next_phase"``        — host may advance; all round conditions satisfied
     """
     actions: list[str] = []
     phase = game.phase
@@ -470,13 +464,8 @@ def available_actions(game: Game) -> list[str]:
         if len(game.players) >= 3:
             actions.append("start_game")
 
-    elif phase == GamePhase.SELECT_NARRATOR:
-        if game.narrator_id is None:
-            actions.append("select_narrator")
-        else:
-            actions.append("confirm_narrator")
-            if game.narrator_confirmed:
-                actions.append("next_phase")
+    elif phase == GamePhase.NARRATOR_ORDERING:
+        actions.append("set_narrator_queue")
 
     elif phase == GamePhase.TURN_SUBMISSION:
         if game.submission_step == SubmissionStep.DECLARATION:

@@ -51,12 +51,6 @@ class NextPhaseRequest(_Body):
     player_id: PlayerIdField
 
 
-class SelectNarratorRequest(_Body):
-    game_id: GameIdField
-    player_id: PlayerIdField
-    narrator_id: PlayerIdField
-
-
 class SubmitCardRequest(_Body):
     game_id: GameIdField
     player_id: PlayerIdField
@@ -75,9 +69,10 @@ class UpdateVoteRequest(_Body):
     card_numbers: list[CardNumberField] = Field(min_length=1, max_length=2)
 
 
-class ConfirmNarratorRequest(_Body):
+class SetNarratorQueueRequest(_Body):
     game_id: GameIdField
     player_id: PlayerIdField
+    narrator_ids: list[PlayerIdField] = Field(min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +80,7 @@ class ConfirmNarratorRequest(_Body):
 # ---------------------------------------------------------------------------
 
 _SCORE_LIKE_PHASES = frozenset(
-    {GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS, GamePhase.LEADERBOARD}
+    {GamePhase.SCORING, GamePhase.LEADERBOARD}
 )
 
 
@@ -167,26 +162,33 @@ async def next_phase(body: NextPhaseRequest) -> dict[str, Any]:
     return {"game": _game_json(game)}
 
 
-@router.post("/select_narrator")
-async def select_narrator(body: SelectNarratorRequest) -> dict[str, Any]:
+@router.post("/set_narrator_queue")
+async def set_narrator_queue(body: SetNarratorQueueRequest) -> dict[str, Any]:
     try:
-        game = game_service.select_narrator(
-            body.game_id, body.player_id, body.narrator_id
+        game = game_service.set_narrator_queue(
+            body.game_id, body.player_id, body.narrator_ids
         )
     except ValueError as exc:
         raise _http_from_value_error(exc) from exc
-    # Phase stays SELECT_NARRATOR until narrator confirms — use a dedicated event.
-    await ws_routes.notify_game_room(game, "narrator_selected")
+    await ws_routes.notify_game_room(game, "phase_changed")
+    return {"game": _game_json(game)}
+
+
+@router.post("/select_narrator")
+async def select_narrator(body: NextPhaseRequest) -> dict[str, Any]:
+    """Deprecated no-op kept for backward compatibility."""
+    game = game_service.get_game(body.game_id)
+    if game is None:
+        raise HTTPException(status_code=404, detail="Game not found")
     return {"game": _game_json(game)}
 
 
 @router.post("/confirm_narrator")
-async def confirm_narrator(body: ConfirmNarratorRequest) -> dict[str, Any]:
-    try:
-        game = game_service.confirm_narrator(body.game_id, body.player_id)
-    except ValueError as exc:
-        raise _http_from_value_error(exc) from exc
-    await ws_routes.notify_game_room(game, "narrator_confirmed")
+async def confirm_narrator(body: NextPhaseRequest) -> dict[str, Any]:
+    """Deprecated no-op kept for backward compatibility."""
+    game = game_service.get_game(body.game_id)
+    if game is None:
+        raise HTTPException(status_code=404, detail="Game not found")
     return {"game": _game_json(game)}
 
 

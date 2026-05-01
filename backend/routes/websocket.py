@@ -243,22 +243,8 @@ async def _handle_client_action(
         return
 
     if event == "confirm_narrator":
-        player_id = data.get("player_id") if isinstance(data, dict) else None
-        if not isinstance(player_id, str):
-            await _send_error(ws, "Missing or invalid player_id")
-            return
-        game = game_service.get_game(game_id)
-        if game is not None:
-            try:
-                game_service.touch_player(game, player_id)
-                _attach_player_socket(game_id, player_id, ws)
-            except ValueError:
-                pass
-        try:
-            game = game_service.confirm_narrator(game_id, player_id)
-            await notify_game_room(game, "narrator_confirmed")
-        except ValueError as exc:
-            await _send_error(ws, str(exc))
+        # Deprecated: narrator confirmation is no longer needed.
+        # Kept as a no-op so older clients don't receive an 'Unknown event' error.
         return
 
     await _send_error(ws, f"Unknown event: {event!r}")

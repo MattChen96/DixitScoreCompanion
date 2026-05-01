@@ -9,14 +9,14 @@ from backend.models.game_phase import GamePhase
 
 ALLOWED_TRANSITIONS: frozenset[tuple[GamePhase, GamePhase]] = frozenset(
     {
-        (GamePhase.LOBBY, GamePhase.SELECT_NARRATOR),
-        (GamePhase.SELECT_NARRATOR, GamePhase.TURN_SUBMISSION),
+        (GamePhase.LOBBY, GamePhase.NARRATOR_ORDERING),
+        (GamePhase.NARRATOR_ORDERING, GamePhase.TURN_SUBMISSION),
         (GamePhase.TURN_SUBMISSION, GamePhase.REVEAL_VOTES),
         (GamePhase.REVEAL_VOTES, GamePhase.REVEAL_NARRATOR),
         (GamePhase.REVEAL_NARRATOR, GamePhase.SCORING),
         (GamePhase.SCORING, GamePhase.LEADERBOARD),
         (GamePhase.LEADERBOARD, GamePhase.NEXT_ROUND),
-        (GamePhase.NEXT_ROUND, GamePhase.SELECT_NARRATOR),
+        (GamePhase.NEXT_ROUND, GamePhase.TURN_SUBMISSION),
     }
 )
 
@@ -63,8 +63,7 @@ def advance_phase_by_host(game: Game, requester_id: str) -> Game:
     Move to the single legal successor for the current phase (host-only).
 
     LOBBY cannot be advanced this way; use start_game instead.
-    SELECT_NARRATOR requires the narrator to have confirmed first
-    (enforced in game_service.next_phase before this is called).
+    NARRATOR_ORDERING cannot be advanced this way; use set_narrator_queue instead.
     TURN_SUBMISSION can only advance to REVEAL_VOTES when all players
     have voted (voting sub-step complete).
     """
@@ -72,7 +71,7 @@ def advance_phase_by_host(game: Game, requester_id: str) -> Game:
     if current in _NO_BLIND_ADVANCE:
         raise ValueError(
             "Cannot advance from LOBBY this way: use start_game (host) "
-            "to move to SELECT_NARRATOR."
+            "to move to NARRATOR_ORDERING."
         )
 
     nxt = allowed_next_phases(current)

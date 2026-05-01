@@ -512,6 +512,119 @@
     }
   }
 
+  function renderNarratorOrdering() {
+    var game = state.game;
+    var players = game.players.slice();
+    var isHostPlayer = isHost();
+
+    var items = players
+      .map(function (p, idx) {
+        return (
+          '<li class="narrator-item" draggable="true" data-player-id="' +
+          escapeHtml(p.id) +
+          '"><span class="narrator-rank">' +
+          (idx + 1) +
+          '</span><span class="narrator-name">' +
+          escapeHtml(p.nickname) +
+          '</span><span class="drag-handle">&#9776;</span></li>'
+        );
+      })
+      .join("");
+
+    var actionArea = isHostPlayer
+      ? '<button type="button" class="primary" id="btn-confirm-order">Confirm order</button>'
+      : '<p class="muted">Waiting for the host to set narrator order&hellip;</p>';
+
+    $('main').innerHTML =
+      '<div class="panel">' +
+      '<p class="muted">Drag to set the narrator order (Round 1 &rarr; 2 &rarr; 3&hellip;)</p>' +
+      '<ul class="narrator-list" id="narrator-list">' + items + '</ul>' +
+      actionArea +
+      '<button type="button" class="ghost" id="btn-leave">Leave</button>' +
+      '</div>';
+
+    if (isHostPlayer) {
+      attachDragListeners();
+      $('btn-confirm-order').onclick = function () {
+        confirmNarratorOrder();
+      };
+    }
+
+    $('btn-leave').onclick = function () {
+      clearSession();
+      render();
+    };
+  }
+
+  function attachDragListeners() {
+    var list = $('narrator-list');
+    if (!list) return;
+    var draggedItem = null;
+
+    list.addEventListener('dragstart', function (e) {
+      draggedItem = e.target.closest('.narrator-item');
+      if (draggedItem) draggedItem.classList.add('dragging');
+    });
+
+    list.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      if (!draggedItem) return;
+      var afterEl = _getDragAfterElement(list, e.clientY);
+      if (afterEl == null) {
+        list.appendChild(draggedItem);
+      } else {
+        list.insertBefore(draggedItem, afterEl);
+      }
+      // Update rank numbers
+      var items = list.querySelectorAll('.narrator-item');
+      items.forEach(function (item, idx) {
+        var rank = item.querySelector('.narrator-rank');
+        if (rank) rank.textContent = idx + 1;
+      });
+    });
+
+    list.addEventListener('dragend', function (e) {
+      if (draggedItem) draggedItem.classList.remove('dragging');
+      draggedItem = null;
+    });
+  }
+
+  function _getDragAfterElement(container, y) {
+    var draggables = Array.prototype.slice.call(
+      container.querySelectorAll('.narrator-item:not(.dragging)')
+    );
+    return draggables.reduce(function (closest, child) {
+      var box = child.getBoundingClientRect();
+      var offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        return { offset: offset, element: child };
+      }
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY }).element;
+  }
+
+  function confirmNarratorOrder() {
+    var list = $('narrator-list');
+    if (!list) return;
+    var narrator_ids = Array.prototype.slice
+      .call(list.querySelectorAll('.narrator-item'))
+      .map(function (el) { return el.getAttribute('data-player-id'); });
+
+    showError('');
+    api('/set_narrator_queue', {
+      game_id: state.gameId,
+      player_id: state.playerId,
+      narrator_ids: narrator_ids,
+    })
+      .then(function (data) {
+        state.game = data.game;
+        render();
+      })
+      .catch(function (e) {
+        showError(e.message);
+      });
+  }
+
   function renderSelectNarrator() {
     var narId = state.game.narrator_id;
     var confirmed = state.game.narrator_confirmed;
@@ -1541,8 +1654,8 @@
     if (ph !== "TURN_SUBMISSION") resetPendingVote();
     if (ph === "LOBBY") {
       renderLobby();
-    } else if (ph === "SELECT_NARRATOR") {
-      renderSelectNarrator();
+    } else if (ph === "NARRATOR_ORDERING") {
+      renderNarratorOrdering();
     } else if (ph === "TURN_SUBMISSION") {
       renderTurnSubmission();
     } else if (ph === "REVEAL_VOTES") {
