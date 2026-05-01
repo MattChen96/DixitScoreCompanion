@@ -142,6 +142,13 @@ No database required.
 * Players connect via phone browser
 * No app installation required
 * Ideally accessed via local network or simple URL
+* Game creator can share a **QR code** — other players scan it to land on the join page with the room code pre-filled
+
+## Deep-Link Entry Point
+
+The backend serves `index.html` on both `/` and `/join/{game_id}`.
+QR codes encode a URL with this path so that scanning on mobile opens the app directly in the join flow for the correct game.
+The frontend detects the `/join/{game_id}` path at boot, pre-populates the room code, and cleans the URL with `history.replaceState`.
 
 ---
 

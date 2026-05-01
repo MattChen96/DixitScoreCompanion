@@ -4,7 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.models.game_phase import GamePhase
+from backend.models.game_phase import GamePhase, SubmissionStep
 
 
 class Player(BaseModel):
@@ -37,6 +37,10 @@ class Game(BaseModel):
     host_id: Optional[str] = None
     narrator_id: Optional[str] = None
     phase: GamePhase = GamePhase.LOBBY
+    # Sub-step within TURN_SUBMISSION phase. When phase != TURN_SUBMISSION,
+    # this field is None. When entering TURN_SUBMISSION, it starts as
+    # "declaration" and auto-advances to "voting" when all cards are validated.
+    submission_step: Optional[SubmissionStep] = None
     cards_on_table: list[int] = Field(default_factory=list)
     score_base_applied: bool = False
     score_bonus_applied: bool = False
@@ -54,7 +58,19 @@ class Game(BaseModel):
     # Defaults to 1 (classic Dixit). Exposed in every broadcast so the
     # frontend can render the vote grid correctly without hardcoding.
     votes_per_player: int = 1
-    # Set to True by POST /confirm_narrator (narrator only, SELECT_NARRATOR
-    # phase). The host can advance to PLAY_CARDS only after this is True.
-    # Cleared on round reset (NEXT_ROUND → SELECT_NARRATOR).
+    # Queue of narrator player IDs for the game, set once during NARRATOR_ORDERING.
+    # After /set_narrator_queue, this is locked for the whole game.
+    narrator_queue: list[str] = Field(default_factory=list)
+    # 0-based index into narrator_queue for the current round.
+    # Increments (modulo queue length) on each NEXT_ROUND → TURN_SUBMISSION transition.
+    narrator_queue_index: int = 0
+    # Deprecated: kept for backward compatibility only. No longer set or checked.
     narrator_confirmed: bool = False
+    # QR code as a base64 PNG data URI (data:image/png;base64,...).
+    # Generated once at game creation. Stripped by game_wire so it is never
+    # included in WebSocket broadcasts or any REST response other than
+    # POST /create_game.
+    qr_code: Optional[str] = None
+    # Dynamic card range: updated whenever a player joins/leaves the lobby.
+    # min is always 1; max equals the current number of players.
+    card_range: dict[str, int] = Field(default_factory=lambda: {"min": 1, "max": 84})

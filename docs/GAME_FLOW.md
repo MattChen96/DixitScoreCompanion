@@ -15,12 +15,16 @@ server-side) and **UI states** (client-side rendering concerns).
 
 | Kind        | Lives on      | Examples                          | Purpose                                   |
 |-------------|---------------|-----------------------------------|-------------------------------------------|
-| Game phase  | Server        | `LOBBY`, `PLAY_CARDS`, `VOTE`, …  | Drives rules, validation, scoring         |
+| Game phase  | Server        | `LOBBY`, `TURN_SUBMISSION`, …     | Drives rules, validation, scoring         |
+| Sub-step    | Server        | `declaration`, `voting`           | Sub-state within TURN_SUBMISSION          |
 | UI state    | Client        | `VOTE_PREVIEW`                    | Formatting / interaction only             |
 
 **Game phases** are a strict enum
 (`backend/models/game_phase.py:GamePhase`), enforced by
 `backend/services/state_machine.py:ALLOWED_TRANSITIONS`.
+
+**Sub-steps** exist within `TURN_SUBMISSION` phase, tracked by
+`Game.submission_step` (`declaration` or `voting`).
 
 **UI states** are local to the frontend and never travel over the wire.
 Entering or leaving a UI state must not mutate server state.
@@ -32,12 +36,10 @@ Entering or leaving a UI state must not mutate server state.
 ```
 LOBBY
 SELECT_NARRATOR
-PLAY_CARDS
-VOTE
+TURN_SUBMISSION      (sub-steps: declaration → voting)
 REVEAL_VOTES
 REVEAL_NARRATOR
-SCORE_BASE
-SCORE_BONUS
+SCORING              (base + bonus unified)
 LEADERBOARD
 NEXT_ROUND
 ```
@@ -52,13 +54,12 @@ Every `Game` starts in `LOBBY` and loops from `NEXT_ROUND` back to
 | Phase             | Player actions                                   | Host actions                                   | Transition trigger                                  | → Next phase     |
 |-------------------|--------------------------------------------------|------------------------------------------------|-----------------------------------------------------|------------------|
 | `LOBBY`           | `POST /join_game` (any number)                   | `POST /start_game` (≥ 3 players required)      | `/start_game`                                       | `SELECT_NARRATOR`|
-| `SELECT_NARRATOR` | Narrator calls `POST /confirm_narrator` once chosen | `POST /select_narrator {narrator_id}` then `POST /next_phase` (after narrator confirms) | `/next_phase` (validation: `Game.narrator_confirmed == true`) | `PLAY_CARDS` |
-| `PLAY_CARDS`      | `POST /submit_card {card_number}` — each active player including the narrator picks a **unique** card number | `POST /next_phase`                             | `/next_phase` (validation: all active players played, narrator has played, all card numbers unique) | `VOTE`           |
-| `VOTE`            | `POST /submit_vote {card_number}` or `POST /update_vote {card_numbers}` — non-narrator only; freely editable until host advances. | `POST /next_phase`                             | `/next_phase` (validation: all active non-narrators have ≥1 vote) | `REVEAL_VOTES`   |
+| `SELECT_NARRATOR` | Narrator calls `POST /confirm_narrator` once chosen | `POST /select_narrator {narrator_id}` then `POST /next_phase` (after narrator confirms) | `/next_phase` (validation: `Game.narrator_confirmed == true`) | `TURN_SUBMISSION` |
+| `TURN_SUBMISSION` (declaration) | `POST /submit_card {card_number}` — each active player including the narrator picks a **unique** card number | — (no host action) | Auto-advance when all declared + validated | `TURN_SUBMISSION` (voting) |
+| `TURN_SUBMISSION` (voting) | `POST /submit_vote {card_number}` or `POST /update_vote {card_numbers}` — non-narrator only; freely editable until host advances | `POST /next_phase` | `/next_phase` (validation: all active non-narrators have ≥1 vote) | `REVEAL_VOTES` |
 | `REVEAL_VOTES`    | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `REVEAL_NARRATOR`|
-| `REVEAL_NARRATOR` | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **base** scores via rules engine) | `SCORE_BASE`     |
-| `SCORE_BASE`      | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **bonus** scores via rules engine) | `SCORE_BONUS`    |
-| `SCORE_BONUS`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `LEADERBOARD`    |
+| `REVEAL_NARRATOR` | —                                                | `POST /next_phase`                             | `/next_phase` (server applies **base and bonus** scores via rules engine) | `SCORING`     |
+| `SCORING`         | —                                                | `POST /next_phase`                             | `/next_phase` (displays unified scoring screen)     | `LEADERBOARD`    |
 | `LEADERBOARD`     | —                                                | `POST /next_phase`                             | `/next_phase`                                       | `NEXT_ROUND`     |
 | `NEXT_ROUND`      | —                                                | `POST /next_phase`                             | `/next_phase` (round reset: see §7) | `SELECT_NARRATOR` |
 
@@ -67,18 +68,20 @@ Rules:
 * **Only the host** may trigger phase transitions via `POST /next_phase`
   (and host-only endpoints `start_game`, `select_narrator`). The
   **designated narrator** must call `confirm_narrator` in
-  `SELECT_NARRATOR` before the host can advance to `PLAY_CARDS` — that
-  call is not a phase transition (`host_id` is set to the first joiner
-  and never changes).
+  `SELECT_NARRATOR` before the host can advance to `TURN_SUBMISSION`.
 * **Players** may only call `submit_card` / `submit_vote` /
-  `update_vote` / `confirm_narrator` during the corresponding phase;
-  every other call in a wrong phase is rejected.
-* `/next_phase` is the generic advance. `LOBBY → SELECT_NARRATOR` is
-  the only exception and uses a dedicated endpoint (`/start_game`).
-* `SELECT_NARRATOR → PLAY_CARDS` now also uses `/next_phase`, but only
-  after the host calls `POST /select_narrator` **and** the chosen
-  narrator calls `POST /confirm_narrator`. The backend blocks
-  `/next_phase` until `Game.narrator_confirmed == true`.
+  `update_vote` / `confirm_narrator` during the corresponding phase
+  and sub-step; every other call is rejected.
+* `/next_phase` is the generic advance. `LOBBY → SELECT_NARRATOR` uses
+  a dedicated endpoint (`/start_game`).
+* **Declaration → Voting auto-advance**: When all active players have
+  declared their cards and no duplicates exist, the server automatically
+  changes `submission_step` from `declaration` to `voting`. The host
+  does NOT need to trigger this transition.
+* **Duplicate card handling**: If duplicate cards are detected after all
+  players have declared, all declarations are reset and players must
+  re-declare. The phase stays `TURN_SUBMISSION` with `submission_step =
+  declaration`.
 
 ---
 
@@ -87,11 +90,12 @@ Rules:
 UI states are documented here so all clients render consistently, but
 they have **no wire representation**.
 
-### 4.1 `VOTE_PREVIEW` (client, during server phase `VOTE`)
+### 4.1 `VOTE_PREVIEW` (client, during `TURN_SUBMISSION` voting step)
 
 Entered when a player taps a card in the vote grid.
 
 * Shows the selected card(s) in large format.
+* Shows the player's declared card in a banner for clarity.
 * Supports 1 or 2 selected cards (target).
 * Actions:
   * **Confirm** → `POST /update_vote` (replaces the full vote list) →
@@ -116,14 +120,13 @@ Entered when a player taps a card in the vote grid.
 |---------------------|------------------------------|
 | `REVEAL_VOTES`      | `renderRevealVotes` — per-player vote list; narrator’s card is not shown as a vote. |
 | `REVEAL_NARRATOR`   | `renderHostContinue` — generic "host advances when ready" (physical table reveal). |
-| `SCORE_BASE`        | `renderScoring("base")` — rows from `Game.last_base_delta`.  |
-| `SCORE_BONUS`       | `renderScoring("bonus")` — rows from `Game.last_bonus_delta`.  |
+| `SCORING`           | `renderScoring()` — unified view with base and bonus points in separate sections. |
 | `LEADERBOARD`       | `renderLeaderboard` — sorted cumulative `Player.score` totals.  |
 | `NEXT_ROUND`        | `renderHostContinue` — generic "host advances when ready".   |
 
-The client does **not** use a `scoring_step` field on `Game` — it uses
-`game.phase` (`SCORE_BASE` vs `SCORE_BONUS`) to pick the panel and the
-relevant `last_*_delta` map.
+The client uses `game.phase` (`SCORING`) along with `last_base_delta`
+and `last_bonus_delta` to render both base and bonus scoring in the
+unified view.
 
 ---
 
@@ -160,16 +163,20 @@ for the life of the game.
 
 The **standard** (default) ruleset implements classic Dixit scoring:
 
-* **Base** — on entering `SCORE_BASE`:
+* **Base** — on entering `SCORING`:
   * If **all** or **none** of the non-narrator players guessed the
     narrator's card: narrator gets **0**, every other player gets
     **+2**.
   * Otherwise: narrator gets **+3**, every correct guesser gets **+3**,
     others get **0**.
-* **Bonus** — on entering `SCORE_BONUS`:
+* **Bonus** — on entering `SCORING`:
   * Every **non-narrator** player gets **+1 per vote received** on the
     card they played this round. The narrator is excluded from bonus
     scoring.
+
+Both base and bonus scoring are applied simultaneously when entering the
+`SCORING` phase. Idempotency flags (`score_base_applied`,
+`score_bonus_applied`) guard against double application on reconnect.
 
 Other rulesets adjust these numbers (see
 `backend/rules/config/high_risk.json`,
@@ -191,6 +198,7 @@ Clears:
 * `Game.last_base_delta` / `Game.last_bonus_delta`
 * `Game.narrator_id` — narrator is re-selected each round
 * `Game.narrator_confirmed` — confirmation resets with each new narrator
+* `Game.submission_step` — reset to `None` (will be set to `declaration` on next TURN_SUBMISSION entry)
 
 Preserves:
 

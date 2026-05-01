@@ -22,6 +22,9 @@
     reconnecting: false, // true between ws.onopen and first game_state
     ws: null,
     newRoomCode: null,
+    newQrCode: null,       // base64 PNG data URI returned by /create_game
+    _pendingJoinId: null,  // game_id extracted from /join/{id} deep-link URL
+    _qrStream: null,       // active MediaStream while QR scanner is open
     reconnectTimer: null,
     pingTimer: null,
   };
@@ -275,25 +278,136 @@
       pill.classList.add("hidden");
       return;
     }
-    pill.textContent = state.game.phase.replace(/_/g, " ");
+    var phaseText = state.game.phase.replace(/_/g, " ");
+    // Show submission step for TURN_SUBMISSION phase
+    if (state.game.phase === "TURN_SUBMISSION" && state.game.submission_step) {
+      phaseText = state.game.submission_step === "declaration"
+        ? "TURN: DECLARE CARD"
+        : "TURN: VOTE";
+    }
+    pill.textContent = phaseText;
     pill.classList.remove("hidden");
   }
 
+  // ---------------------------------------------------------------------------
+  // QR scanner helpers
+  // ---------------------------------------------------------------------------
+
+  function _stopQrStream() {
+    if (state._qrStream) {
+      state._qrStream.getTracks().forEach(function (t) { t.stop(); });
+      state._qrStream = null;
+    }
+    var vid = $("qr-video");
+    if (vid) { vid.srcObject = null; vid.style.display = "none"; }
+  }
+
+  function startQrScan(onResult) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showError("Camera access not supported in this browser.");
+      return;
+    }
+    // Show the video element inside the panel (positioned in the page flow)
+    var scanPanel = $("qr-scan-panel");
+    if (scanPanel) { scanPanel.style.display = ""; }
+    navigator.mediaDevices
+      .getUserMedia({ video: { facingMode: "environment" } })
+      .then(function (stream) {
+        state._qrStream = stream;
+        var vid = $("qr-video");
+        var canvas = $("qr-canvas");
+        vid.srcObject = stream;
+        vid.style.display = "block";
+        vid.setAttribute("playsinline", true);
+        vid.play();
+
+        var ctx = canvas.getContext("2d");
+        var scanning = true;
+
+        function tick() {
+          if (!scanning) return;
+          if (vid.readyState === vid.HAVE_ENOUGH_DATA) {
+            canvas.width = vid.videoWidth;
+            canvas.height = vid.videoHeight;
+            ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+            var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            var code = window.jsQR && window.jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: "dontInvert",
+            });
+            if (code) {
+              scanning = false;
+              _stopQrStream();
+              onResult(code.data);
+              return;
+            }
+          }
+          requestAnimationFrame(tick);
+        }
+        requestAnimationFrame(tick);
+      })
+      .catch(function (err) {
+        _stopQrStream();
+        showError("Camera error: " + err.message);
+      });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Create screen (host enters nickname before creating a game)
+  // ---------------------------------------------------------------------------
+
+  function renderCreate() {
+    $('main').innerHTML =
+      '<div class="panel">' +
+      '<h2 style="font-size:1rem;margin:0 0 0.75rem">Crea nuova partita</h2>' +
+      '<label>Nickname</label>' +
+      '<input type="text" id="create-nick" maxlength="40" autocomplete="nickname" />' +
+      '<button type="button" class="primary" id="btn-do-create">Crea</button>' +
+      '<button type="button" class="ghost" id="btn-back-join" style="margin-top:0.5rem">Indietro</button>' +
+      '</div>';
+    $('btn-do-create').onclick = function () {
+      showError('');
+      var nick = $('create-nick').value.trim();
+      if (!nick) {
+        showError('Inserisci un nickname.');
+        return;
+      }
+      api('/create_game', { nickname: nick })
+        .then(function (data) {
+          state.gameId = data.game_id;
+          state.playerId = data.player_id;
+          state.recoveryToken = data.recovery_token;
+          state.newQrCode = data.qr_code || null;
+          state.newRoomCode = null;
+          saveSession();
+          connectWs();
+          render();
+        })
+        .catch(function (e) {
+          showError(e.message);
+        });
+    };
+    $('btn-back-join').onclick = function () {
+      showError('');
+      renderJoin();
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Join screen
+  // ---------------------------------------------------------------------------
+
   function renderJoin() {
-    var code = state.newRoomCode
-      ? '<p class="muted">Share this room code: <strong>' +
-        escapeHtml(state.newRoomCode) +
-        "</strong></p>"
-      : "";
+    var prefillCode = state._pendingJoinId || state.newRoomCode || "";
     $("main").innerHTML =
       '<div class="panel">' +
       "<label>Nickname</label>" +
       '<input type="text" id="nick" maxlength="40" autocomplete="nickname" />' +
       "<label>Room code</label>" +
-      '<input type="text" id="room" maxlength="32" pattern="[0-9a-fA-F]*" autocomplete="off" />' +
+      '<input type="text" id="room" maxlength="32" pattern="[0-9a-fA-F]*" autocomplete="off" value="' + escapeHtml(prefillCode) + '" />' +
       '<button type="button" class="primary" id="btn-join">Join game</button>' +
-      '<button type="button" class="ghost" id="btn-create">Create new game</button>' +
-      code +
+      '<button type="button" class="ghost" id="btn-scan-qr">Scansiona QR</button>' +
+      '<button type="button" class="ghost" id="btn-create">Crea nuova partita</button>' +
+      '<div id="qr-scan-panel" style="display:none;margin-top:0.75rem"></div>' +
       "</div>";
     $("btn-join").onclick = function () {
       showError("");
@@ -310,6 +424,7 @@
           state.recoveryToken = data.recovery_token;
           state.game = data.game;
           state.newRoomCode = null;
+          state._pendingJoinId = null;
           saveSession();
           connectWs();
           render();
@@ -318,17 +433,23 @@
           showError(e.message);
         });
     };
+    $("btn-scan-qr").onclick = function () {
+      showError("");
+      $("qr-scan-panel").style.display = "";
+      startQrScan(function (decoded) {
+        // Extract game_id from URL like https://host/join/GAMEID
+        var match = decoded.match(/\/join\/([0-9a-fA-F]{1,32})(?:[/?#]|$)/);
+        if (match) {
+          state._pendingJoinId = match[1].toUpperCase();
+        } else {
+          state._pendingJoinId = decoded; // fallback: treat whole string as room code
+        }
+        renderJoin();
+      });
+    };
     $("btn-create").onclick = function () {
       showError("");
-      api("/create_game")
-        .then(function (data) {
-          state.newRoomCode = data.game_id;
-          $("room").value = data.game_id;
-          renderJoin();
-        })
-        .catch(function (e) {
-          showError(e.message);
-        });
+      renderCreate();
     };
   }
 
@@ -359,33 +480,165 @@
   function renderLobby() {
     if (isHost()) {
       var canStart = actions().indexOf("start_game") !== -1;
-      $("main").innerHTML =
-        '<div class="panel"><p class="muted">You are the host. When everyone has joined, start the game.</p>' +
+      var joinUrl = location.protocol + "//" + location.host + "/join/" + encodeURIComponent(state.gameId);
+      var qrHtml = state.newQrCode
+        ? '<img src="' + state.newQrCode + '" alt="QR code" style="width:100%;max-width:180px;display:block;margin:0.75rem auto;border-radius:8px;" />'
+        : "";
+      $('main').innerHTML =
+        '<div class="panel">' +
+        '<p class="muted">You are the host. When everyone has joined, start the game.</p>' +
+        qrHtml +
+        '<p class="muted" style="text-align:center;margin:0 0 0.25rem">Room code: <strong>' + escapeHtml(state.gameId) + '</strong></p>' +
+        '<button type="button" class="ghost" id="btn-copy-link" style="margin-bottom:0.75rem">Copia link</button>' +
         '<ul class="list" id="plist"></ul>' +
         '<button type="button" class="primary" id="btn-start"' +
-        (canStart ? "" : " disabled") +
-        ">Start game</button>" +
-        '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
-      renderPlayerList($("plist"));
-      $("btn-start").onclick = function () {
-        if (actions().indexOf("start_game") === -1) return;
-        showError("");
-        api("/start_game", { game_id: state.gameId, player_id: state.playerId })
+        (canStart ? '' : ' disabled') +
+        '>Start game</button>' +
+        '<button type="button" class="ghost" id="btn-leave">Leave</button>' +
+        '</div>';
+      renderPlayerList($('plist'));
+      $('btn-copy-link').onclick = function () {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(joinUrl).then(function () {
+            $('btn-copy-link').textContent = 'Copiato!';
+            setTimeout(function () {
+              if ($('btn-copy-link')) $('btn-copy-link').textContent = 'Copia link';
+            }, 2000);
+          }).catch(function () { showError('Copia manualmente: ' + joinUrl); });
+        } else {
+          showError('Copia manualmente: ' + joinUrl);
+        }
+      };
+      $('btn-start').onclick = function () {
+        if (actions().indexOf('start_game') === -1) return;
+        showError('');
+        api('/start_game', { game_id: state.gameId, player_id: state.playerId })
           .then(function (data) {
             state.game = data.game;
             render();
           })
-          .catch(function (e) {
-            showError(e.message);
-          });
+          .catch(function (e) { showError(e.message); });
       };
-      $("btn-leave").onclick = function () {
+      $('btn-leave').onclick = function () {
         clearSession();
         render();
       };
     } else {
-      renderWaiting("Waiting for the host to start…");
+      renderWaiting('Waiting for the host to start…');
     }
+  }
+
+  function renderNarratorOrdering() {
+    var game = state.game;
+    var players = game.players.slice();
+    var isHostPlayer = isHost();
+
+    var items = players
+      .map(function (p, idx) {
+        return (
+          '<li class="narrator-item" draggable="true" data-player-id="' +
+          escapeHtml(p.id) +
+          '"><span class="narrator-rank">' +
+          (idx + 1) +
+          '</span><span class="narrator-name">' +
+          escapeHtml(p.nickname) +
+          '</span><span class="drag-handle">&#9776;</span></li>'
+        );
+      })
+      .join("");
+
+    var actionArea = isHostPlayer
+      ? '<button type="button" class="primary" id="btn-confirm-order">Confirm order</button>'
+      : '<p class="muted">Waiting for the host to set narrator order&hellip;</p>';
+
+    $('main').innerHTML =
+      '<div class="panel">' +
+      '<p class="muted">Drag to set the narrator order (Round 1 &rarr; 2 &rarr; 3&hellip;)</p>' +
+      '<ul class="narrator-list" id="narrator-list">' + items + '</ul>' +
+      actionArea +
+      '<button type="button" class="ghost" id="btn-leave">Leave</button>' +
+      '</div>';
+
+    if (isHostPlayer) {
+      attachDragListeners();
+      $('btn-confirm-order').onclick = function () {
+        confirmNarratorOrder();
+      };
+    }
+
+    $('btn-leave').onclick = function () {
+      clearSession();
+      render();
+    };
+  }
+
+  function attachDragListeners() {
+    var list = $('narrator-list');
+    if (!list) return;
+    var draggedItem = null;
+
+    list.addEventListener('dragstart', function (e) {
+      draggedItem = e.target.closest('.narrator-item');
+      if (draggedItem) draggedItem.classList.add('dragging');
+    });
+
+    list.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      if (!draggedItem) return;
+      var afterEl = _getDragAfterElement(list, e.clientY);
+      if (afterEl == null) {
+        list.appendChild(draggedItem);
+      } else {
+        list.insertBefore(draggedItem, afterEl);
+      }
+      // Update rank numbers
+      var items = list.querySelectorAll('.narrator-item');
+      items.forEach(function (item, idx) {
+        var rank = item.querySelector('.narrator-rank');
+        if (rank) rank.textContent = idx + 1;
+      });
+    });
+
+    list.addEventListener('dragend', function (e) {
+      if (draggedItem) draggedItem.classList.remove('dragging');
+      draggedItem = null;
+    });
+  }
+
+  function _getDragAfterElement(container, y) {
+    var draggables = Array.prototype.slice.call(
+      container.querySelectorAll('.narrator-item:not(.dragging)')
+    );
+    return draggables.reduce(function (closest, child) {
+      var box = child.getBoundingClientRect();
+      var offset = y - box.top - box.height / 2;
+      if (offset < 0 && offset > closest.offset) {
+        return { offset: offset, element: child };
+      }
+      return closest;
+    }, { offset: Number.NEGATIVE_INFINITY }).element;
+  }
+
+  function confirmNarratorOrder() {
+    var list = $('narrator-list');
+    if (!list) return;
+    var narrator_ids = Array.prototype.slice
+      .call(list.querySelectorAll('.narrator-item'))
+      .map(function (el) { return el.getAttribute('data-player-id'); });
+
+    showError('');
+    api('/set_narrator_queue', {
+      game_id: state.gameId,
+      player_id: state.playerId,
+      narrator_ids: narrator_ids,
+    })
+      .then(function (data) {
+        state.game = data.game;
+        render();
+      })
+      .catch(function (e) {
+        showError(e.message);
+      });
   }
 
   function renderSelectNarrator() {
@@ -521,65 +774,354 @@
   }
 
   function renderPlayCards() {
+    // Legacy function - redirects to new turn submission flow
+    renderTurnSubmission();
+  }
+
+  // ---------------------------------------------------------------------------
+  // TURN SUBMISSION - Unified declaration + voting wizard
+  // ---------------------------------------------------------------------------
+
+  function renderTurnSubmission() {
     var p = me();
     if (!p) {
       renderWaiting("Loading…");
       return;
     }
+
+    var step = state.game.submission_step; // "declaration" or "voting"
+    var isNarrator = state.playerId === state.game.narrator_id;
+
+    // Build wizard step indicator
+    var declarationStepClass = step === "declaration" ? "active" : "completed";
+    var votingStepClass = step === "voting" ? "active" : "";
+    var stepIndicator =
+      '<div class="wizard-steps">' +
+      '<div class="wizard-step ' + declarationStepClass + '">1. Declare card</div>' +
+      '<div class="wizard-step ' + votingStepClass + '">2. Vote</div>' +
+      '</div>';
+
+    if (step === "declaration") {
+      renderDeclarationStep(p, isNarrator, stepIndicator);
+    } else if (step === "voting") {
+      renderVotingStep(p, isNarrator, stepIndicator);
+    } else {
+      renderWaiting("Waiting for turn submission to begin…");
+    }
+  }
+
+  // Declaration sub-step: player declares which card they played
+  function renderDeclarationStep(p, isNarrator, stepIndicator) {
+    // Already declared - waiting for others
     if (p.card_played != null) {
-      var allPlayed = actions().indexOf("next_phase") !== -1;
-      var label = allPlayed
-        ? "All cards played. Continue to voting when ready."
-        : "Waiting for other players to play a card…";
-      renderHostContinue(label, allPlayed);
+      var live = state.game.players.filter(function(pl) { return pl.connected; });
+      var declared = live.filter(function(pl) { return pl.card_played != null; });
+      var waiting = live.length - declared.length;
+      
+      var statusMsg = waiting > 0
+        ? "Waiting for " + waiting + " player" + (waiting === 1 ? "" : "s") + " to declare their card…"
+        : "All cards declared! Validating…";
+
+      $("main").innerHTML =
+        '<div class="panel">' + stepIndicator +
+        '<p class="muted">' + escapeHtml(statusMsg) + '</p>' +
+        '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(p.card_played)) + '</div>' +
+        '<div class="card-label">Your declared card</div>' +
+        '</div>' +
+        '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+      $("btn-leave").onclick = function() { clearSession(); render(); };
       return;
     }
+
+    // Show card picker grid
     var range = cardRange();
-    var canPlay = actions().indexOf("submit_card") !== -1;
+    var canDeclare = actions().indexOf("submit_card") !== -1;
+
+    // Create grid of card numbers (7 columns)
+    var gridBtns = "";
+    for (var n = range.min; n <= range.max; n++) {
+      gridBtns +=
+        '<button type="button" data-card="' + n + '"' +
+        (canDeclare ? "" : " disabled") +
+        '>' + n + '</button>';
+    }
+
     $("main").innerHTML =
-      '<div class="panel"><label>Your card number (' +
-      range.min +
-      "–" +
-      range.max +
-      ')</label>' +
-      '<input type="number" id="cardn" min="' +
-      range.min +
-      '" max="' +
-      range.max +
-      '" step="1" inputmode="numeric"' +
-      (canPlay ? "" : " disabled") +
-      " />" +
-      '<button type="button" class="primary" id="btn-card"' +
-      (canPlay ? "" : " disabled") +
-      ">Play card</button>" +
+      '<div class="panel">' + stepIndicator +
+      '<p class="muted">Select the card number you played:</p>' +
+      '<div class="card-picker-grid">' + gridBtns + '</div>' +
       '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
-    $("btn-card").onclick = function () {
-      if (actions().indexOf("submit_card") === -1) return;
+
+    document.querySelectorAll(".card-picker-grid button").forEach(function(btn) {
+      btn.onclick = function() {
+        if (btn.disabled) return;
+        var cardNum = parseInt(btn.getAttribute("data-card"), 10);
+        submitCardDeclaration(cardNum);
+      };
+    });
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  function submitCardDeclaration(cardNumber) {
+    showError("");
+    api("/submit_card", {
+      game_id: state.gameId,
+      player_id: state.playerId,
+      card_number: cardNumber,
+    })
+      .then(function(data) {
+        state.game = data.game;
+        render();
+      })
+      .catch(function(e) {
+        showError(e.message);
+      });
+  }
+
+  // Voting sub-step: player votes for narrator's card
+  function renderVotingStep(p, isNarrator, stepIndicator) {
+    var votesPerPlayer = state.game.votes_per_player || 1;
+    var myVotes = p.votes || [];
+    var myDeclaredCard = p.card_played;
+
+    // Narrator doesn't vote
+    if (isNarrator) {
+      renderNarratorVotingWait(stepIndicator);
+      return;
+    }
+
+    // Player already voted and not editing
+    if (myVotes.length > 0 && pendingVote === null) {
+      renderVoteSubmittedWithBanner(myVotes, myDeclaredCard, stepIndicator);
+      return;
+    }
+
+    // Vote preview (before confirming)
+    if (pendingVote !== null && previewReady) {
+      renderVotePreviewWithBanner(myDeclaredCard, stepIndicator);
+      return;
+    }
+
+    // Show vote grid
+    renderVoteGridWithBanner(p, myDeclaredCard, stepIndicator, votesPerPlayer);
+  }
+
+  function renderNarratorVotingWait(stepIndicator) {
+    var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
+    var label = isHost()
+      ? (canAdvance ? "All votes are in — continue when ready." : "Waiting for all players to vote…")
+      : "You are the storyteller — waiting for votes.";
+
+    var html = '<div class="panel">' + stepIndicator +
+      '<p class="muted">' + escapeHtml(label) + '</p>';
+
+    if (canAdvance) {
+      html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue to reveal</button>';
+    }
+
+    html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+    $("main").innerHTML = html;
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function() {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function(data) { state.game = data.game; render(); })
+          .catch(function(e) { showError(e.message); });
+      };
+    }
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  function renderVoteSubmittedWithBanner(votes, declaredCard, stepIndicator) {
+    var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
+    var voteWord = votes.length === 1 ? "vote" : "votes";
+
+    var tiles = votes.map(function(c) {
+      return '<div class="vote-preview-card">' + escapeHtml(String(c)) + '</div>';
+    }).join("");
+
+    var declaredBanner = declaredCard != null
+      ? '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
+        '<div class="card-label">Your played card</div></div>'
+      : '';
+
+    var html = '<div class="panel">' + stepIndicator +
+      declaredBanner +
+      '<p class="muted">Your ' + voteWord + ' (submitted)</p>' +
+      '<div class="vote-preview">' + tiles + '</div>' +
+      '<button type="button" class="ghost" id="btn-change-vote" style="margin-top:0.75rem">Change vote</button>';
+
+    if (canAdvance) {
+      html += '<button type="button" class="primary" id="btn-next" style="margin-top:0.75rem">Continue to reveal</button>';
+    }
+
+    html += '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
+    $("main").innerHTML = html;
+
+    $("btn-change-vote").onclick = function() {
+      pendingVote = votes.slice();
+      previewReady = false;
+      render();
+    };
+
+    var btnNext = $("btn-next");
+    if (btnNext) {
+      btnNext.onclick = function() {
+        if (!isHost() || actions().indexOf("next_phase") === -1) return;
+        showError("");
+        api("/next_phase", { game_id: state.gameId, player_id: state.playerId })
+          .then(function(data) { state.game = data.game; render(); })
+          .catch(function(e) { showError(e.message); });
+      };
+    }
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  function renderVotePreviewWithBanner(declaredCard, stepIndicator) {
+    var selection = pendingVote || [];
+    var canSubmit = actions().indexOf("update_vote") !== -1 ||
+                    actions().indexOf("submit_vote") !== -1;
+
+    var tiles = selection.map(function(c) {
+      return '<div class="vote-preview-card">' + escapeHtml(String(c)) + '</div>';
+    }).join("");
+
+    var voteWord = selection.length === 1 ? "vote" : "votes";
+
+    var declaredBanner = declaredCard != null
+      ? '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
+        '<div class="card-label">Your played card</div></div>'
+      : '';
+
+    $("main").innerHTML =
+      '<div class="panel">' + stepIndicator +
+      declaredBanner +
+      '<p class="muted">Confirm your ' + voteWord + '?</p>' +
+      '<div class="vote-preview">' + tiles + '</div>' +
+      '<button type="button" class="primary" id="btn-confirm"' +
+      (canSubmit ? "" : " disabled") + '>Confirm</button>' +
+      '<button type="button" class="ghost" id="btn-change">Change</button></div>';
+
+    $("btn-confirm").onclick = function() {
       showError("");
-      var r = cardRange();
-      var n = parseInt($("cardn").value, 10);
-      if (isNaN(n) || n < r.min || n > r.max) {
-        showError("Enter a valid card number.");
-        return;
-      }
-      api("/submit_card", {
+      api("/update_vote", {
         game_id: state.gameId,
         player_id: state.playerId,
-        card_number: n,
+        card_numbers: pendingVote,
       })
-        .then(function (data) {
+        .then(function(data) {
+          resetPendingVote();
           state.game = data.game;
           render();
         })
-        .catch(function (e) {
-          showError(e.message);
-        });
+        .catch(function(e) { showError(e.message); });
     };
-    $("btn-leave").onclick = function () {
-      clearSession();
+
+    $("btn-change").onclick = function() {
+      previewReady = false;
       render();
     };
   }
+
+  function renderVoteGridWithBanner(p, declaredCard, stepIndicator, votesPerPlayer) {
+    var cards = state.game.cards_on_table || [];
+    if (!cards.length) {
+      renderWaiting("No cards on the table yet.");
+      return;
+    }
+
+    if (pendingVote === null) pendingVote = [];
+
+    var canVote = actions().indexOf("submit_vote") !== -1 ||
+                  actions().indexOf("update_vote") !== -1;
+    var myCard = p.card_played;
+    var selected = pendingVote;
+
+    var gridInstruction = votesPerPlayer === 1
+      ? "Vote for the storyteller's card:"
+      : "Vote for up to " + votesPerPlayer + " cards" +
+        (selected.length > 0 ? " (" + selected.length + " selected):" : ":");
+
+    var btns = cards.map(function(c) {
+      var isOwnCard = c === myCard;
+      var isSelected = selected.indexOf(c) !== -1;
+      var isDisabled = !canVote || isOwnCard ||
+                       (!isSelected && selected.length >= votesPerPlayer);
+      var cls = "vote-btn" +
+                (isOwnCard ? " own-card" : "") +
+                (isSelected ? " selected" : "");
+      var label = isOwnCard ? c + "\u00a0(yours)" : String(c);
+      return (
+        '<button type="button" class="' + cls + '" data-card="' + c + '"' +
+        (isDisabled ? " disabled" : "") + '>' + label + '</button>'
+      );
+    }).join("");
+
+    var confirmBtn = (votesPerPlayer > 1 && selected.length >= 1)
+      ? '<button type="button" class="primary" id="btn-confirm-sel" style="margin-top:1rem">' +
+        "Confirm " + selected.length + " vote" + (selected.length !== 1 ? "s" : "") +
+        "</button>"
+      : "";
+
+    var declaredBanner = declaredCard != null
+      ? '<div class="declared-card-banner">' +
+        '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
+        '<div class="card-label">Your played card</div></div>'
+      : '';
+
+    $("main").innerHTML =
+      '<div class="panel">' + stepIndicator +
+      declaredBanner +
+      '<p class="muted">' + escapeHtml(gridInstruction) + '</p>' +
+      '<div class="vote-grid">' + btns + '</div>' +
+      confirmBtn +
+      '<button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
+
+    document.querySelectorAll(".vote-btn").forEach(function(btn) {
+      btn.onclick = function() {
+        if (btn.disabled) return;
+        var card = parseInt(btn.getAttribute("data-card"), 10);
+        var idx = pendingVote.indexOf(card);
+        if (idx !== -1) {
+          pendingVote.splice(idx, 1);
+        } else {
+          pendingVote.push(card);
+        }
+        if (votesPerPlayer === 1 && pendingVote.length === 1) {
+          previewReady = true;
+        }
+        if (votesPerPlayer > 1 && pendingVote.length >= votesPerPlayer) {
+          previewReady = true;
+        }
+        render();
+      };
+    });
+
+    var confirmSel = $("btn-confirm-sel");
+    if (confirmSel) {
+      confirmSel.onclick = function() {
+        if (pendingVote.length >= 1) {
+          previewReady = true;
+          render();
+        }
+      };
+    }
+
+    $("btn-leave").onclick = function() { clearSession(); render(); };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Legacy renderVote - kept for backwards compatibility if needed
+  // ---------------------------------------------------------------------------
 
   function renderVote() {
     var p = me();
@@ -906,20 +1448,45 @@
     };
   }
 
-  function renderScoring(step) {
+  function renderScoring() {
     var game = state.game;
-    var deltas = step === "base" ? (game.last_base_delta || {}) : (game.last_bonus_delta || {});
-    var label = step === "base" ? "Base points this round" : "Bonus points this round";
+    var baseDeltas = game.last_base_delta || {};
+    var bonusDeltas = game.last_bonus_delta || {};
 
-    var rows = game.players
+    // Build base points section
+    var baseRows = game.players
       .slice()
       .sort(function (a, b) {
-        var da = deltas[a.id] || 0;
-        var db = deltas[b.id] || 0;
+        var da = baseDeltas[a.id] || 0;
+        var db = baseDeltas[b.id] || 0;
         return db - da || a.id.localeCompare(b.id);
       })
       .map(function (p) {
-        var delta = deltas[p.id] || 0;
+        var delta = baseDeltas[p.id] || 0;
+        var name = escapeHtml(p.nickname) + (p.id === state.playerId ? " (you)" : "");
+        var pts = (delta > 0 ? "+" : "") + delta;
+        return (
+          '<div class="score-row"><span>' +
+          name +
+          "</span><strong" +
+          (delta === 0 ? ' class="muted"' : "") +
+          ">" +
+          pts +
+          "</strong></div>"
+        );
+      })
+      .join("");
+
+    // Build bonus points section
+    var bonusRows = game.players
+      .slice()
+      .sort(function (a, b) {
+        var da = bonusDeltas[a.id] || 0;
+        var db = bonusDeltas[b.id] || 0;
+        return db - da || a.id.localeCompare(b.id);
+      })
+      .map(function (p) {
+        var delta = bonusDeltas[p.id] || 0;
         var name = escapeHtml(p.nickname) + (p.id === state.playerId ? " (you)" : "");
         var pts = (delta > 0 ? "+" : "") + delta;
         return (
@@ -938,14 +1505,19 @@
     var hostBtn = isHost()
       ? '<button type="button" class="primary" id="btn-next"' +
         (canNext ? "" : " disabled") +
-        ">Continue</button>"
+        ">Continue to Leaderboard</button>"
       : "";
 
     $("main").innerHTML =
-      '<div class="panel"><p class="muted">' +
-      label +
-      "</p>" +
-      rows +
+      '<div class="panel">' +
+      '<div class="scoring-section">' +
+      '<p class="muted">Base points this round</p>' +
+      baseRows +
+      '</div>' +
+      '<div class="scoring-section">' +
+      '<p class="muted">Bonus points this round</p>' +
+      bonusRows +
+      '</div>' +
       hostBtn +
       '<button type="button" class="ghost" id="btn-leave">Leave</button></div>';
 
@@ -1094,21 +1666,18 @@
     }
 
     var ph = state.game.phase;
-    if (ph !== "VOTE") resetPendingVote();
+    // Reset pending vote when leaving TURN_SUBMISSION or when step changes
+    if (ph !== "TURN_SUBMISSION") resetPendingVote();
     if (ph === "LOBBY") {
       renderLobby();
-    } else if (ph === "SELECT_NARRATOR") {
-      renderSelectNarrator();
-    } else if (ph === "PLAY_CARDS") {
-      renderPlayCards();
-    } else if (ph === "VOTE") {
-      renderVote();
+    } else if (ph === "NARRATOR_ORDERING") {
+      renderNarratorOrdering();
+    } else if (ph === "TURN_SUBMISSION") {
+      renderTurnSubmission();
     } else if (ph === "REVEAL_VOTES") {
       renderRevealVotes();
-    } else if (ph === "SCORE_BASE") {
-      renderScoring("base");
-    } else if (ph === "SCORE_BONUS") {
-      renderScoring("bonus");
+    } else if (ph === "SCORING") {
+      renderScoring();
     } else if (
       ph === "REVEAL_NARRATOR" ||
       ph === "NEXT_ROUND"
@@ -1122,6 +1691,15 @@
   }
 
   function boot() {
+    // Check for deep-link path /join/{game_id} (from a scanned QR code).
+    // Pre-fill the room code field and clean the URL so that a refresh
+    // or share no longer re-triggers the join flow.
+    var pathMatch = location.pathname.match(/^\/join\/([0-9a-fA-F]{1,32})(?:\/|$)/);
+    if (pathMatch) {
+      state._pendingJoinId = pathMatch[1].toUpperCase();
+      history.replaceState(null, "", "/");
+    }
+
     var gid = localStorage.getItem(STORAGE_GAME);
     var pid = localStorage.getItem(STORAGE_PLAYER);
     var tok = localStorage.getItem(STORAGE_TOKEN);

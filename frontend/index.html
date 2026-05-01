@@ -198,14 +198,149 @@
     }
     .reveal-pill.narrator-card { border-color: var(--accent); }
     .reveal-pill.my-vote { border-color: var(--accent); font-weight: 700; }
+    /* Wizard steps indicator */
+    .wizard-steps {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.25rem;
+    }
+    .wizard-step {
+      flex: 1;
+      padding: 0.5rem;
+      text-align: center;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-radius: var(--radius);
+      border: 1px solid #333a44;
+      background: var(--bg);
+      color: var(--muted);
+    }
+    .wizard-step.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .wizard-step.completed {
+      border-color: #4a7a4a;
+      background: #1a2a1a;
+      color: #6cb56c;
+    }
+    /* Card picker grid for declaration */
+    .card-picker-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 0.35rem;
+      margin: 1rem 0;
+    }
+    .card-picker-grid button {
+      aspect-ratio: 1;
+      min-height: 2.5rem;
+      border-radius: 6px;
+      border: 1px solid #333a44;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      padding: 0;
+    }
+    .card-picker-grid button:active { background: #252b35; }
+    .card-picker-grid button.selected {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      font-weight: 700;
+    }
+    /* Declared card display during voting */
+    .declared-card-banner {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem;
+      margin-bottom: 1rem;
+      border-radius: var(--radius);
+      background: rgba(92, 143, 191, 0.1);
+      border: 1px solid rgba(92, 143, 191, 0.3);
+    }
+    .declared-card-banner .card-number {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 2.5rem;
+      height: 2.5rem;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+    .declared-card-banner .card-label {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    /* Scoring sections (unified scoring view with base and bonus) */
+    .scoring-section {
+      margin-bottom: 1.5rem;
+    }
+    .scoring-section:last-of-type {
+      margin-bottom: 1rem;
+    }
+    .scoring-section > p {
+      margin: 0 0 0.75rem 0;
+    }
+    /* Narrator ordering drag-and-drop screen */
+    .narrator-list {
+      list-style: none;
+      padding: 0;
+      margin: 0.75rem 0 1.25rem;
+    }
+    .narrator-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.85rem 0.75rem;
+      margin-bottom: 0.5rem;
+      background: var(--bg);
+      border: 1px solid #333a44;
+      border-radius: var(--radius);
+      cursor: move;
+      user-select: none;
+      transition: opacity 0.15s, border-color 0.15s;
+      min-height: var(--tap);
+    }
+    .narrator-item:hover { border-color: var(--accent); }
+    .narrator-item.dragging {
+      opacity: 0.45;
+      border-color: var(--accent);
+    }
+    .narrator-rank {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 50%;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.875rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .narrator-name { flex: 1; font-size: 0.95rem; font-weight: 500; }
+    .drag-handle { color: var(--muted); font-size: 1.1rem; flex-shrink: 0; }
     .hidden { display: none !important; }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
 </head>
 <body>
   <h1>Dixit companion</h1>
   <div id="phase-pill" class="phase-pill hidden"></div>
   <main id="main"></main>
   <p id="error" class="error hidden" role="alert"></p>
+  <!-- Hidden elements used by the QR scanner (camera + canvas) -->
+  <video id="qr-video" style="display:none" playsinline muted></video>
+  <canvas id="qr-canvas" style="display:none"></canvas>
   <script src="/app.js" defer></script>
 </body>
 </html>

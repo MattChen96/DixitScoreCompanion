@@ -6,14 +6,19 @@ phase, delegates phase transitions to :mod:`backend.services.state_machine`,
 and scoring to the rules engine (:mod:`backend.rules.rules_loader`).
 """
 
+import base64
+import io
+import os
 import time
 import uuid
 from typing import Optional
 
+import qrcode
+
 from backend import store
 from backend.models.constants import MAX_CARD_NUMBER, MIN_CARD_NUMBER
 from backend.models.game import Game, Player
-from backend.models.game_phase import GamePhase
+from backend.models.game_phase import GamePhase, SubmissionStep
 from backend.rules.base_rules import RulesEngine
 from backend.rules.rules_loader import load_rules
 from backend.services.state_machine import advance_phase_by_host, transition_phase
@@ -40,15 +45,16 @@ def _engine_for(game: Game) -> RulesEngine:
 # WebSocket "game_error" payload used when two players play the same card.
 DUPLICATE_CARDS_ERROR = "duplicate_cards"
 DUPLICATE_CARDS_MESSAGE = (
-    "Two or more players selected the same card. The round has been reset."
+    "Two or more players selected the same card. Please re-enter your cards."
 )
 
 
 class DuplicateCardError(Exception):
-    """Raised when a PLAY_CARDS submission collides with a card already played.
+    """Raised when a card declaration collides with a card already declared.
 
-    The service has already reset the round (cleared every ``card_played`` and
-    ``cards_on_table``) before raising. ``self.game`` is the post-reset state.
+    The service has already reset the declarations (cleared every ``card_played``
+    and ``cards_on_table``) before raising. ``self.game`` is the post-reset state.
+    The phase remains TURN_SUBMISSION with submission_step=declaration.
     """
 
     def __init__(self, game: "Game") -> None:
@@ -57,32 +63,38 @@ class DuplicateCardError(Exception):
         self.error = DUPLICATE_CARDS_ERROR
 
 
-def _reset_play_cards_round(game: Game) -> None:
-    """Invalidate a PLAY_CARDS round: clear submissions, keep phase = PLAY_CARDS."""
+def _reset_declarations(game: Game) -> None:
+    """Invalidate declarations: clear card_played and cards_on_table.
+    
+    The phase stays TURN_SUBMISSION with submission_step=declaration.
+    Does NOT clear votes (they shouldn't exist at this point anyway).
+    """
     for p in game.players:
         p.card_played = None
-        p.votes.clear()
     game.cards_on_table.clear()
 
 
 def _reset_round_after_next(game: Game) -> None:
-    """Clear per-round fields on NEXT_ROUND → SELECT_NARRATOR.
+    """Clear per-round fields on NEXT_ROUND → TURN_SUBMISSION.
 
     This is round lifecycle, not scoring — it runs after both scoring
     passes have already been applied and prepares a fresh round. Keeping
     it here (rather than in the rules engine) avoids widening the
     engine's surface area for logic that isn't rule-dependent.
+
+    Note: narrator_id is NOT cleared here; it is rotated from
+    narrator_queue in next_phase after this function returns.
     """
     for p in game.players:
         p.card_played = None
         p.votes.clear()
+        p.connected = True
     game.cards_on_table.clear()
     game.score_base_applied = False
     game.score_bonus_applied = False
     game.last_base_delta.clear()
     game.last_bonus_delta.clear()
-    game.narrator_id = None
-    game.narrator_confirmed = False
+    game.submission_step = None
 
 
 def _has_duplicate_cards(game: Game) -> bool:
@@ -120,6 +132,25 @@ def _require_card_number(card_number: int) -> None:
         )
 
 
+def _generate_qr_code(game_id: str) -> str:
+    """Return a base64 PNG data URI for a QR code linking to the game lobby.
+
+    The URL encoded in the QR is ``https://{domain}/join/{game_id}`` where
+    ``domain`` is read from the ``DIXIT_APP_DOMAIN`` environment variable
+    (defaults to ``"localhost"`` for local development).
+
+    The returned string starts with ``data:image/png;base64,`` and can be
+    used directly as an ``<img src="...">`` attribute.
+    """
+    domain = os.environ.get("DIXIT_APP_DOMAIN", "localhost")
+    url = f"https://{domain}/join/{game_id}"
+    img = qrcode.make(url)
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
 def create_game(ruleset: str = "standard", votes_per_player: int = 1) -> Game:
     # Fail fast on an unknown ruleset name so we never create a game
     # that would later fail at start or scoring time. The resulting
@@ -130,8 +161,36 @@ def create_game(ruleset: str = "standard", votes_per_player: int = 1) -> Game:
 
     game_id = uuid.uuid4().hex[:8].upper()
     game = Game(id=game_id, ruleset=ruleset, votes_per_player=votes_per_player)
+    game.qr_code = _generate_qr_code(game_id)
     store.set_game(game_id, game)
     return game
+
+
+def _update_card_range(game: Game) -> None:
+    """Update card_range based on the current number of players."""
+    num_players = len(game.players)
+    game.card_range = {"min": 1, "max": max(num_players, 1)}
+
+
+def create_game_with_host(
+    nickname: str, ruleset: str = "standard", votes_per_player: int = 1
+) -> tuple[Game, Player]:
+    """Create a new game and add the creator as the first player (host)."""
+    _engine_cache.setdefault(ruleset, load_rules(ruleset))
+    if votes_per_player not in (1, 2):
+        raise ValueError("votes_per_player must be 1 or 2")
+
+    game_id = uuid.uuid4().hex[:8].upper()
+    game = Game(id=game_id, ruleset=ruleset, votes_per_player=votes_per_player)
+    game.qr_code = _generate_qr_code(game_id)
+
+    player_id = uuid.uuid4().hex[:8]
+    player = Player(id=player_id, nickname=nickname)
+    game.host_id = player_id
+    game.players.append(player)
+    _update_card_range(game)
+    store.set_game(game_id, game)
+    return game, player
 
 
 def get_game(game_id: str) -> Optional[Game]:
@@ -150,6 +209,7 @@ def join_game(game_id: str, nickname: str) -> tuple[Game, Player]:
         game.host_id = player_id
 
     game.players.append(player)
+    _update_card_range(game)
     return game, player
 
 
@@ -168,41 +228,39 @@ def start_game(game_id: str, requester_id: str) -> Game:
     # straight cache hit.
     _engine_for(game)
 
-    transition_phase(game, requester_id, GamePhase.SELECT_NARRATOR)
+    transition_phase(game, requester_id, GamePhase.NARRATOR_ORDERING)
     return game
 
 
-def select_narrator(game_id: str, requester_id: str, narrator_id: str) -> Game:
-    game = _require_game(game_id)
-    if requester_id != game.host_id:
-        raise ValueError("Only the host can select the narrator")
-    _require_phase(game, GamePhase.SELECT_NARRATOR, "Selecting the narrator")
+def set_narrator_queue(game_id: str, requester_id: str, narrator_ids: list[str]) -> Game:
+    """Set the narrator rotation order for the whole game (NARRATOR_ORDERING phase).
 
-    if not any(p.id == narrator_id for p in game.players):
-        raise ValueError("Narrator is not a player in this game")
-
-    game.narrator_id = narrator_id
-    game.narrator_confirmed = False
-    return game
-
-
-def confirm_narrator(game_id: str, requester_id: str) -> Game:
-    """Narrator explicitly accepts their role before PLAY_CARDS begins.
-
-    Only the designated narrator may call this. The host can then advance
-    ``SELECT_NARRATOR → PLAY_CARDS`` via ``POST /next_phase``.
+    Validates that narrator_ids contains all players exactly once, sets the
+    narrator_queue, and auto-transitions the game to TURN_SUBMISSION with
+    the first player as narrator.
     """
     game = _require_game(game_id)
-    _require_phase(game, GamePhase.SELECT_NARRATOR, "Confirming narrator role")
+    if requester_id != game.host_id:
+        raise ValueError("Only the host can set the narrator order")
+    _require_phase(game, GamePhase.NARRATOR_ORDERING, "Setting narrator queue")
 
-    if game.narrator_id is None:
-        raise ValueError("No narrator has been selected yet")
-    if requester_id != game.narrator_id:
-        raise ValueError("Only the selected narrator can confirm their role")
-    if game.narrator_confirmed:
-        raise ValueError("Narrator has already confirmed")
+    player_ids = {p.id for p in game.players}
+    if len(narrator_ids) != len(game.players):
+        raise ValueError(
+            f"narrator_ids must include all {len(game.players)} players"
+        )
+    if len(narrator_ids) != len(set(narrator_ids)):
+        raise ValueError("narrator_ids must not contain duplicates")
+    if set(narrator_ids) != player_ids:
+        raise ValueError("narrator_ids must contain exactly the IDs of all current players")
 
-    game.narrator_confirmed = True
+    game.narrator_queue = list(narrator_ids)
+    game.narrator_queue_index = 0
+    game.narrator_id = narrator_ids[0]
+    # Auto-transition to TURN_SUBMISSION
+    transition_phase(game, requester_id, GamePhase.TURN_SUBMISSION)
+    game.submission_step = SubmissionStep.DECLARATION
+    store.set_game(game_id, game)
     return game
 
 
@@ -211,51 +269,112 @@ def next_phase(game_id: str, requester_id: str) -> Game:
 
     old_phase = game.phase
 
-    if old_phase == GamePhase.SELECT_NARRATOR:
-        if game.narrator_id is None:
-            raise ValueError("A narrator must be selected before advancing")
-        if not game.narrator_confirmed:
+    # TURN_SUBMISSION can only advance to REVEAL_VOTES when in voting sub-step
+    # and all non-narrator players have voted.
+    if old_phase == GamePhase.TURN_SUBMISSION:
+        if game.submission_step != SubmissionStep.VOTING:
             raise ValueError(
-                "The narrator must confirm their role before the host can advance"
+                "Cannot advance to reveal: voting phase has not started yet"
             )
-
-    # Defensive: never advance out of PLAY_CARDS while duplicate cards exist.
-    # In normal operation submit_card already prevents this, but the guard keeps
-    # the invariant local to the transition that would otherwise expose it.
-    if old_phase == GamePhase.PLAY_CARDS and _has_duplicate_cards(game):
-        _reset_play_cards_round(game)
-        raise DuplicateCardError(game)
+        all_voters = [
+            p for p in game.players if p.id != game.narrator_id
+        ]
+        if not all_voters or not all(len(p.votes) >= 1 for p in all_voters):
+            raise ValueError(
+                "Cannot advance to reveal: not all players have voted"
+            )
 
     advance_phase_by_host(game, requester_id)
     new_phase = game.phase
 
-    if new_phase in (GamePhase.SCORE_BASE, GamePhase.SCORE_BONUS):
+    # Clear submission_step when leaving TURN_SUBMISSION
+    if old_phase == GamePhase.TURN_SUBMISSION and new_phase == GamePhase.REVEAL_VOTES:
+        game.submission_step = None
+
+    if new_phase in (GamePhase.SCORING,):
         _engine_for(game).calculate_scores(game)
-    elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.SELECT_NARRATOR:
+    elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.TURN_SUBMISSION:
         _reset_round_after_next(game)
+        # Rotate narrator from the queue
+        if game.narrator_queue:
+            game.narrator_queue_index = (
+                game.narrator_queue_index + 1
+            ) % len(game.narrator_queue)
+            game.narrator_id = game.narrator_queue[game.narrator_queue_index]
+        game.submission_step = SubmissionStep.DECLARATION
 
     return game
 
 
+def _all_active_declared(game: Game) -> bool:
+    """Check if all players have declared a card."""
+    players = game.players
+    return bool(players) and all(p.card_played is not None for p in players)
+
+
+def _try_advance_to_voting(game: Game) -> bool:
+    """Attempt to auto-advance from declaration to voting sub-step.
+    
+    Returns True if advancement occurred, False otherwise.
+    Raises DuplicateCardError if duplicate cards are detected.
+    """
+    if game.phase != GamePhase.TURN_SUBMISSION:
+        return False
+    if game.submission_step != SubmissionStep.DECLARATION:
+        return False
+    if not _all_active_declared(game):
+        return False
+    
+    # All players declared - validate no duplicates
+    if _has_duplicate_cards(game):
+        _reset_declarations(game)
+        raise DuplicateCardError(game)
+    
+    # Success - auto-advance to voting
+    game.submission_step = SubmissionStep.VOTING
+    return True
+
+
 def submit_card(game_id: str, player_id: str, card_number: int) -> Game:
+    """Declare which card the player has played (TURN_SUBMISSION declaration step).
+    
+    When all active players have declared, validates that all cards are unique.
+    If duplicates exist, resets all declarations and raises DuplicateCardError.
+    If validation succeeds, auto-advances to the voting sub-step.
+    """
     _require_card_number(card_number)
     game = _require_game(game_id)
-    _require_phase(game, GamePhase.PLAY_CARDS, "Submitting a card")
+
+    # Validate against the game's dynamic card range
+    cr = game.card_range
+    if card_number < cr["min"] or card_number > cr["max"]:
+        raise ValueError(
+            f"card_number must be between {cr['min']} and {cr['max']} "
+            f"for this game, got {card_number}."
+        )
+
+    # Must be in TURN_SUBMISSION phase with declaration sub-step
+    if game.phase != GamePhase.TURN_SUBMISSION:
+        raise ValueError(
+            f"Declaring a card is only allowed in TURN_SUBMISSION phase; "
+            f"current phase is {game.phase.value}."
+        )
+    if game.submission_step != SubmissionStep.DECLARATION:
+        raise ValueError(
+            "Declaring a card is only allowed in the declaration step; "
+            "currently in voting step."
+        )
 
     player = _require_player(game, player_id)
     if player.card_played is not None:
-        raise ValueError("This player has already submitted a card this round")
-
-    # Each player must select a UNIQUE card. If this submission collides with
-    # one already on the table, invalidate the whole round (clear every
-    # card_played and cards_on_table) and signal the duplicate to the caller,
-    # which is responsible for broadcasting the "game_error" event.
-    if card_number in game.cards_on_table:
-        _reset_play_cards_round(game)
-        raise DuplicateCardError(game)
+        raise ValueError("This player has already declared a card this round")
 
     player.card_played = card_number
     game.cards_on_table.append(card_number)
+    
+    # Try to auto-advance to voting (will validate uniqueness)
+    _try_advance_to_voting(game)
+    
     return game
 
 
@@ -267,7 +386,18 @@ def submit_vote(game_id: str, player_id: str, card_number: int) -> Game:
     """
     _require_card_number(card_number)
     game = _require_game(game_id)
-    _require_phase(game, GamePhase.VOTE, "Voting")
+    
+    # Must be in TURN_SUBMISSION phase with voting sub-step
+    if game.phase != GamePhase.TURN_SUBMISSION:
+        raise ValueError(
+            f"Voting is only allowed in TURN_SUBMISSION phase; "
+            f"current phase is {game.phase.value}."
+        )
+    if game.submission_step != SubmissionStep.VOTING:
+        raise ValueError(
+            "Voting is only allowed in the voting step; "
+            "currently in declaration step."
+        )
 
     if not game.cards_on_table:
         raise ValueError("There are no cards on the table to vote for yet")
@@ -303,7 +433,18 @@ def update_vote(game_id: str, player_id: str, card_numbers: list[int]) -> Game:
     for card_number in card_numbers:
         _require_card_number(card_number)
     game = _require_game(game_id)
-    _require_phase(game, GamePhase.VOTE, "Updating votes")
+    
+    # Must be in TURN_SUBMISSION phase with voting sub-step
+    if game.phase != GamePhase.TURN_SUBMISSION:
+        raise ValueError(
+            f"Updating votes is only allowed in TURN_SUBMISSION phase; "
+            f"current phase is {game.phase.value}."
+        )
+    if game.submission_step != SubmissionStep.VOTING:
+        raise ValueError(
+            "Updating votes is only allowed in the voting step; "
+            "currently in declaration step."
+        )
 
     if not game.cards_on_table:
         raise ValueError("There are no cards on the table to vote for yet")
@@ -347,11 +488,11 @@ def available_actions(game: Game) -> list[str]:
     on top where needed.
 
     Action names map 1-to-1 to API call names:
-    * ``"start_game"``      — LOBBY, ≥3 players present
-    * ``"select_narrator"`` — SELECT_NARRATOR phase active
-    * ``"submit_card"``     — PLAY_CARDS phase active
-    * ``"submit_vote"``     — VOTE phase active
-    * ``"next_phase"``      — host may advance; all round conditions satisfied
+    * ``"start_game"``        — LOBBY, ≥3 players present
+    * ``"set_narrator_queue"`` — NARRATOR_ORDERING phase, host only
+    * ``"submit_card"``       — TURN_SUBMISSION phase, declaration sub-step
+    * ``"submit_vote"``       — TURN_SUBMISSION phase, voting sub-step
+    * ``"next_phase"``        — host may advance; all round conditions satisfied
     """
     actions: list[str] = []
     phase = game.phase
@@ -360,34 +501,26 @@ def available_actions(game: Game) -> list[str]:
         if len(game.players) >= 3:
             actions.append("start_game")
 
-    elif phase == GamePhase.SELECT_NARRATOR:
-        if game.narrator_id is None:
-            actions.append("select_narrator")
-        else:
-            actions.append("confirm_narrator")
-            if game.narrator_confirmed:
+    elif phase == GamePhase.NARRATOR_ORDERING:
+        actions.append("set_narrator_queue")
+
+    elif phase == GamePhase.TURN_SUBMISSION:
+        if game.submission_step == SubmissionStep.DECLARATION:
+            actions.append("submit_card")
+            # No next_phase in declaration - auto-advances when all cards validated
+        elif game.submission_step == SubmissionStep.VOTING:
+            actions.append("submit_vote")
+            actions.append("update_vote")
+            all_voters = [
+                p for p in game.players if p.id != game.narrator_id
+            ]
+            if all_voters and all(len(p.votes) >= 1 for p in all_voters):
                 actions.append("next_phase")
-
-    elif phase == GamePhase.PLAY_CARDS:
-        actions.append("submit_card")
-        live = active_players(game)
-        if live and all(p.card_played is not None for p in live):
-            actions.append("next_phase")
-
-    elif phase == GamePhase.VOTE:
-        actions.append("submit_vote")
-        actions.append("update_vote")
-        live_voters = [
-            p for p in active_players(game) if p.id != game.narrator_id
-        ]
-        if live_voters and all(len(p.votes) >= 1 for p in live_voters):
-            actions.append("next_phase")
 
     elif phase in (
         GamePhase.REVEAL_VOTES,
         GamePhase.REVEAL_NARRATOR,
-        GamePhase.SCORE_BASE,
-        GamePhase.SCORE_BONUS,
+        GamePhase.SCORING,
         GamePhase.NEXT_ROUND,
         GamePhase.LEADERBOARD,
     ):
