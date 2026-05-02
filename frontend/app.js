@@ -35,10 +35,12 @@
   //   we should render VOTE_PREVIEW rather than the grid.
   var pendingVote = null;
   var previewReady = false;
+  var voteNumbersHidden = false;
 
   function resetPendingVote() {
     pendingVote = null;
     previewReady = false;
+    voteNumbersHidden = false;
   }
 
   function $(id) {
@@ -942,20 +944,31 @@
     var canAdvance = isHost() && actions().indexOf("next_phase") !== -1;
     var voteWord = votes.length === 1 ? "vote" : "votes";
 
+    var eyeIcon = voteNumbersHidden ? '&#128584;' : '&#128065;';
+    var toggleTitle = voteNumbersHidden ? 'Show numbers' : 'Hide numbers';
+    var toggleBtn = '<button type="button" id="btn-toggle-nums" title="' + toggleTitle + '" ' +
+      'style="background:none;border:none;cursor:pointer;font-size:1.1rem;padding:0;line-height:1;vertical-align:middle">' +
+      eyeIcon + '</button>';
+
     var tiles = votes.map(function(c) {
-      return '<div class="vote-preview-card">' + escapeHtml(String(c)) + '</div>';
+      var display = voteNumbersHidden ? '\u2022\u2022' : escapeHtml(String(c));
+      return '<div class="vote-preview-card" style="min-width:8rem;">' + display + '</div>';
     }).join("");
 
+    var declaredNum = voteNumbersHidden ? '\u2022\u2022' : escapeHtml(String(declaredCard));
     var declaredBanner = declaredCard != null
       ? '<div class="declared-card-banner">' +
-        '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
+        '<div class="card-number">' + declaredNum + '</div>' +
         '<div class="card-label">Your played card</div></div>'
       : '';
 
     var html = '<div class="panel">' + stepIndicator +
       declaredBanner +
       '<p class="muted">Your ' + voteWord + ' (submitted)</p>' +
-      '<div class="vote-preview">' + tiles + '</div>' +
+      '<div style="display:flex;align-items:center;justify-content:center;gap:0.75rem;">' +
+      '<div class="vote-preview" style="margin:0;flex-shrink:0;">' + tiles + '</div>' +
+      toggleBtn +
+      '</div>' +
       '<button type="button" class="ghost" id="btn-change-vote" style="margin-top:0.75rem">Change vote</button>';
 
     if (canAdvance) {
@@ -970,6 +983,14 @@
       previewReady = false;
       render();
     };
+
+    var btnToggle = $("btn-toggle-nums");
+    if (btnToggle) {
+      btnToggle.onclick = function() {
+        voteNumbersHidden = !voteNumbersHidden;
+        render();
+      };
+    }
 
     var btnNext = $("btn-next");
     if (btnNext) {
@@ -1066,12 +1087,6 @@
       );
     }).join("");
 
-    var confirmBtn = (votesPerPlayer > 1 && selected.length >= 1)
-      ? '<button type="button" class="primary" id="btn-confirm-sel" style="margin-top:1rem">' +
-        "Confirm " + selected.length + " vote" + (selected.length !== 1 ? "s" : "") +
-        "</button>"
-      : "";
-
     var declaredBanner = declaredCard != null
       ? '<div class="declared-card-banner">' +
         '<div class="card-number">' + escapeHtml(String(declaredCard)) + '</div>' +
@@ -1083,7 +1098,6 @@
       declaredBanner +
       '<p class="muted">' + escapeHtml(gridInstruction) + '</p>' +
       '<div class="vote-grid">' + btns + '</div>' +
-      confirmBtn +
       '<button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
 
     document.querySelectorAll(".vote-btn").forEach(function(btn) {
@@ -1096,25 +1110,29 @@
         } else {
           pendingVote.push(card);
         }
-        if (votesPerPlayer === 1 && pendingVote.length === 1) {
-          previewReady = true;
-        }
-        if (votesPerPlayer > 1 && pendingVote.length >= votesPerPlayer) {
-          previewReady = true;
+        // Auto-submit as soon as the player has selected enough cards
+        if (pendingVote.length >= votesPerPlayer) {
+          showError("");
+          var votesToSend = pendingVote.slice();
+          api("/update_vote", {
+            game_id: state.gameId,
+            player_id: state.playerId,
+            card_numbers: votesToSend,
+          })
+            .then(function(data) {
+              resetPendingVote();
+              state.game = data.game;
+              render();
+            })
+            .catch(function(e) {
+              showError(e.message);
+              render();
+            });
+          return;
         }
         render();
       };
     });
-
-    var confirmSel = $("btn-confirm-sel");
-    if (confirmSel) {
-      confirmSel.onclick = function() {
-        if (pendingVote.length >= 1) {
-          previewReady = true;
-          render();
-        }
-      };
-    }
 
     $("btn-leave").onclick = function() { clearSession(); render(); };
   }
@@ -1682,7 +1700,7 @@
       ph === "REVEAL_NARRATOR" ||
       ph === "NEXT_ROUND"
     ) {
-      renderHostContinue("Follow the table in the room. Host advances when ready.");
+      renderWaiting("Loading…");
     } else if (ph === "LEADERBOARD") {
       renderLeaderboard();
     } else {

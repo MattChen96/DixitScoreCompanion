@@ -291,11 +291,21 @@ def next_phase(game_id: str, requester_id: str) -> Game:
     if old_phase == GamePhase.TURN_SUBMISSION and new_phase == GamePhase.REVEAL_VOTES:
         game.submission_step = None
 
-    if new_phase in (GamePhase.SCORING,):
+    if new_phase == GamePhase.SCORING:
         _engine_for(game).calculate_scores(game)
-    elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.TURN_SUBMISSION:
+    elif old_phase == GamePhase.LEADERBOARD and new_phase == GamePhase.NEXT_ROUND:
+        # Auto-advance: NEXT_ROUND is internal, jump straight to TURN_SUBMISSION
         _reset_round_after_next(game)
-        # Rotate narrator from the queue
+        if game.narrator_queue:
+            game.narrator_queue_index = (
+                game.narrator_queue_index + 1
+            ) % len(game.narrator_queue)
+            game.narrator_id = game.narrator_queue[game.narrator_queue_index]
+        game.submission_step = SubmissionStep.DECLARATION
+        transition_phase(game, requester_id, GamePhase.TURN_SUBMISSION)
+    elif old_phase == GamePhase.NEXT_ROUND and new_phase == GamePhase.TURN_SUBMISSION:
+        # Fallback if next_phase is called directly from NEXT_ROUND
+        _reset_round_after_next(game)
         if game.narrator_queue:
             game.narrator_queue_index = (
                 game.narrator_queue_index + 1
@@ -521,7 +531,6 @@ def available_actions(game: Game) -> list[str]:
         GamePhase.REVEAL_VOTES,
         GamePhase.REVEAL_NARRATOR,
         GamePhase.SCORING,
-        GamePhase.NEXT_ROUND,
         GamePhase.LEADERBOARD,
     ):
         actions.append("next_phase")
