@@ -156,6 +156,9 @@ def create_game(ruleset: str = "standard", votes_per_player: int = 1) -> Game:
     # that would later fail at start or scoring time. The resulting
     # engine is cached for subsequent _engine_for(game) calls.
     _engine_cache.setdefault(ruleset, load_rules(ruleset))
+    # Odyssey always uses 2 votes per player regardless of what the client sends.
+    if ruleset == "odyssey":
+        votes_per_player = 2
     if votes_per_player not in (1, 2):
         raise ValueError("votes_per_player must be 1 or 2")
 
@@ -177,6 +180,9 @@ def create_game_with_host(
 ) -> tuple[Game, Player]:
     """Create a new game and add the creator as the first player (host)."""
     _engine_cache.setdefault(ruleset, load_rules(ruleset))
+    # Odyssey always uses 2 votes per player regardless of what the client sends.
+    if ruleset == "odyssey":
+        votes_per_player = 2
     if votes_per_player not in (1, 2):
         raise ValueError("votes_per_player must be 1 or 2")
 
