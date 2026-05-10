@@ -357,15 +357,35 @@
   // Create screen (host enters nickname before creating a game)
   // ---------------------------------------------------------------------------
 
+  var _rulesetOptions = [
+    { value: 'standard',  label: 'Standard',  desc: 'Regole classiche Dixit' },
+    { value: 'casual',    label: 'Casual',     desc: 'Più permissivo, per principianti' },
+    { value: 'high_risk', label: 'High Risk',  desc: 'Premi alti, penalità severe' },
+    { value: 'odyssey',   label: 'Odyssey',    desc: 'Vota 1 o 2 carte, premi diversi' },
+  ];
+
   function renderCreate() {
+    var rulesetRadios = _rulesetOptions.map(function(opt) {
+      var checked = opt.value === 'standard' ? ' checked' : '';
+      return (
+        '<label style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:0.4rem;cursor:pointer">' +
+        '<input type="radio" name="ruleset" value="' + opt.value + '"' + checked + ' style="margin-top:0.2rem">' +
+        '<span><strong>' + opt.label + '</strong> <span class="muted" style="font-size:0.85em">— ' + opt.desc + '</span></span>' +
+        '</label>'
+      );
+    }).join('');
+
     $('main').innerHTML =
       '<div class="panel">' +
       '<h2 style="font-size:1rem;margin:0 0 0.75rem">Crea nuova partita</h2>' +
       '<label>Nickname</label>' +
       '<input type="text" id="create-nick" maxlength="40" autocomplete="nickname" />' +
-      '<button type="button" class="primary" id="btn-do-create">Crea</button>' +
+      '<p style="margin:0.75rem 0 0.3rem;font-weight:600">Modalità di gioco</p>' +
+      rulesetRadios +
+      '<button type="button" class="primary" id="btn-do-create" style="margin-top:0.75rem">Crea</button>' +
       '<button type="button" class="ghost" id="btn-back-join" style="margin-top:0.5rem">Indietro</button>' +
       '</div>';
+
     $('btn-do-create').onclick = function () {
       showError('');
       var nick = $('create-nick').value.trim();
@@ -373,7 +393,15 @@
         showError('Inserisci un nickname.');
         return;
       }
-      api('/create_game', { nickname: nick })
+      var selectedRuleset = 'standard';
+      document.querySelectorAll('input[name="ruleset"]').forEach(function(r) {
+        if (r.checked) selectedRuleset = r.value;
+      });
+      api('/create_game', {
+        nickname: nick,
+        ruleset: selectedRuleset,
+        votes_per_player: selectedRuleset === 'odyssey' ? 2 : 1,
+      })
         .then(function (data) {
           state.gameId = data.game_id;
           state.playerId = data.player_id;
@@ -1054,7 +1082,10 @@
   }
 
   function renderVoteGridWithBanner(p, declaredCard, stepIndicator, votesPerPlayer) {
-    var cards = state.game.cards_on_table || [];
+    var game = state.game;
+    var isOdyssey = votesPerPlayer === 2 && game.ruleset === 'odyssey';
+
+    var cards = game.cards_on_table || [];
     if (!cards.length) {
       renderWaiting("No cards on the table yet.");
       return;
@@ -1067,16 +1098,24 @@
     var myCard = p.card_played;
     var selected = pendingVote;
 
-    var gridInstruction = votesPerPlayer === 1
-      ? "Vote for the storyteller's card:"
-      : "Vote for up to " + votesPerPlayer + " cards" +
+    var maxSelectable = isOdyssey ? 2 : votesPerPlayer;
+
+    var gridInstruction;
+    if (isOdyssey) {
+      gridInstruction = "Seleziona 1 carta (rischio +4) o 2 carte (+3 se corretto)" +
+        (selected.length > 0 ? " — " + selected.length + " selezionata/e" : "") + ":";
+    } else if (votesPerPlayer === 1) {
+      gridInstruction = "Vote for the storyteller's card:";
+    } else {
+      gridInstruction = "Vote for up to " + votesPerPlayer + " cards" +
         (selected.length > 0 ? " (" + selected.length + " selected):" : ":");
+    }
 
     var btns = cards.map(function(c) {
       var isOwnCard = c === myCard;
       var isSelected = selected.indexOf(c) !== -1;
       var isDisabled = !canVote || isOwnCard ||
-                       (!isSelected && selected.length >= votesPerPlayer);
+                       (!isSelected && selected.length >= maxSelectable);
       var cls = "vote-btn" +
                 (isOwnCard ? " own-card" : "") +
                 (isSelected ? " selected" : "");
@@ -1093,11 +1132,29 @@
         '<div class="card-label">Your played card</div></div>'
       : '';
 
+    var actionBtns;
+    if (isOdyssey) {
+      var btn1Disabled = selected.length !== 1 || !canVote;
+      var btn2Disabled = selected.length !== 2 || !canVote;
+      actionBtns =
+        '<div style="display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap">' +
+        '<button type="button" class="primary" id="btn-odyssey-1"' +
+        (btn1Disabled ? ' disabled' : '') + ' style="flex:1;min-width:140px">' +
+        'Punta tutto: vota 1 carta (+4)</button>' +
+        '<button type="button" class="primary" id="btn-odyssey-2"' +
+        (btn2Disabled ? ' disabled' : '') + ' style="flex:1;min-width:140px">' +
+        'Gioca sicuro: vota 2 carte (+3)</button>' +
+        '</div>';
+    } else {
+      actionBtns = '';
+    }
+
     $("main").innerHTML =
       '<div class="panel">' + stepIndicator +
       declaredBanner +
       '<p class="muted">' + escapeHtml(gridInstruction) + '</p>' +
       '<div class="vote-grid">' + btns + '</div>' +
+      actionBtns +
       '<button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
 
     document.querySelectorAll(".vote-btn").forEach(function(btn) {
@@ -1109,6 +1166,11 @@
           pendingVote.splice(idx, 1);
         } else {
           pendingVote.push(card);
+        }
+        if (isOdyssey) {
+          // In Odyssey the player must explicitly press one of the two buttons.
+          render();
+          return;
         }
         // Auto-submit as soon as the player has selected enough cards
         if (pendingVote.length >= votesPerPlayer) {
@@ -1134,6 +1196,33 @@
       };
     });
 
+    function submitOdysseyVote() {
+      if (!canVote || pendingVote.length < 1) return;
+      showError("");
+      var votesToSend = pendingVote.slice();
+      api("/update_vote", {
+        game_id: state.gameId,
+        player_id: state.playerId,
+        card_numbers: votesToSend,
+      })
+        .then(function(data) {
+          resetPendingVote();
+          state.game = data.game;
+          render();
+        })
+        .catch(function(e) {
+          showError(e.message);
+          render();
+        });
+    }
+
+    if (isOdyssey) {
+      var btnOd1 = $("btn-odyssey-1");
+      if (btnOd1) btnOd1.onclick = function() { if (!btnOd1.disabled) submitOdysseyVote(); };
+      var btnOd2 = $("btn-odyssey-2");
+      if (btnOd2) btnOd2.onclick = function() { if (!btnOd2.disabled) submitOdysseyVote(); };
+    }
+
     $("btn-leave").onclick = function() { clearSession(); render(); };
   }
 
@@ -1149,6 +1238,7 @@
     }
 
     var votesPerPlayer = state.game.votes_per_player || 1;
+    var isOdyssey = votesPerPlayer === 2 && state.game.ruleset === 'odyssey';
     var myVotes = p.votes || [];
 
     // The narrator never votes; show waiting / host-advance panel.
@@ -1184,17 +1274,25 @@
     var myCard = p.card_played;
     var selected = pendingVote; // array (may be empty)
 
-    var gridInstruction = votesPerPlayer === 1
-      ? "Vote for one card."
-      : "Vote for up to " + votesPerPlayer + " cards" +
+    var maxSelectable = isOdyssey ? 2 : votesPerPlayer;
+
+    var gridInstruction;
+    if (isOdyssey) {
+      gridInstruction = "Seleziona 1 carta (rischio +4) o 2 carte (+3 se corretto)" +
+        (selected.length > 0 ? " — " + selected.length + " selezionata/e" : "") + ".";
+    } else if (votesPerPlayer === 1) {
+      gridInstruction = "Vote for one card.";
+    } else {
+      gridInstruction = "Vote for up to " + votesPerPlayer + " cards" +
         (selected.length > 0 ? " (" + selected.length + " selected)." : ".");
+    }
 
     var btns = cards
       .map(function (c) {
         var isOwnCard = c === myCard;
         var isSelected = selected.indexOf(c) !== -1;
         var isDisabled = !canVote || isOwnCard ||
-                         (!isSelected && selected.length >= votesPerPlayer);
+                         (!isSelected && selected.length >= maxSelectable);
         var cls = "vote-btn" +
                   (isOwnCard ? " own-card" : "") +
                   (isSelected ? " selected" : "");
@@ -1207,17 +1305,32 @@
       })
       .join("");
 
-    // "Confirm selection" button — appears for multi-vote once ≥1 card chosen.
-    var confirmBtn = (votesPerPlayer > 1 && selected.length >= 1)
-      ? '<button type="button" class="primary" id="btn-confirm-sel" style="margin-top:1rem">' +
-        "Confirm " + selected.length + " vote" + (selected.length !== 1 ? "s" : "") +
-        "</button>"
-      : "";
+    var actionBtns;
+    if (isOdyssey) {
+      var btn1Disabled = selected.length !== 1 || !canVote;
+      var btn2Disabled = selected.length !== 2 || !canVote;
+      actionBtns =
+        '<div style="display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap">' +
+        '<button type="button" class="primary" id="btn-odyssey-1"' +
+        (btn1Disabled ? ' disabled' : '') + ' style="flex:1;min-width:140px">' +
+        'Punta tutto: vota 1 carta (+4)</button>' +
+        '<button type="button" class="primary" id="btn-odyssey-2"' +
+        (btn2Disabled ? ' disabled' : '') + ' style="flex:1;min-width:140px">' +
+        'Gioca sicuro: vota 2 carte (+3)</button>' +
+        '</div>';
+    } else {
+      // "Confirm selection" button — appears for multi-vote once ≥1 card chosen.
+      actionBtns = (votesPerPlayer > 1 && selected.length >= 1)
+        ? '<button type="button" class="primary" id="btn-confirm-sel" style="margin-top:1rem">' +
+          "Confirm " + selected.length + " vote" + (selected.length !== 1 ? "s" : "") +
+          "</button>"
+        : "";
+    }
 
     $("main").innerHTML =
       '<div class="panel"><p class="muted">' + escapeHtml(gridInstruction) + "</p>" +
       '<div class="vote-grid">' + btns + "</div>" +
-      confirmBtn +
+      actionBtns +
       '<button type="button" class="ghost" id="btn-leave" style="margin-top:1rem">Leave</button></div>';
 
     document.querySelectorAll(".vote-btn").forEach(function (btn) {
@@ -1231,6 +1344,11 @@
         } else {
           pendingVote.push(card);
         }
+        if (isOdyssey) {
+          // Odyssey: player uses explicit buttons to confirm, not auto-advance.
+          render();
+          return;
+        }
         // For single-vote, immediately advance to VOTE_PREVIEW on selection.
         if (votesPerPlayer === 1 && pendingVote.length === 1) {
           previewReady = true;
@@ -1242,6 +1360,29 @@
         render();
       };
     });
+
+    function submitOdysseyVoteLegacy() {
+      if (!canVote || pendingVote.length < 1) return;
+      showError("");
+      api("/update_vote", {
+        game_id: state.gameId,
+        player_id: state.playerId,
+        card_numbers: pendingVote.slice(),
+      })
+        .then(function (data) {
+          resetPendingVote();
+          state.game = data.game;
+          render();
+        })
+        .catch(function (e) { showError(e.message); });
+    }
+
+    if (isOdyssey) {
+      var btnOd1 = $("btn-odyssey-1");
+      if (btnOd1) btnOd1.onclick = function() { if (!btnOd1.disabled) submitOdysseyVoteLegacy(); };
+      var btnOd2 = $("btn-odyssey-2");
+      if (btnOd2) btnOd2.onclick = function() { if (!btnOd2.disabled) submitOdysseyVoteLegacy(); };
+    }
 
     var confirmSel = $("btn-confirm-sel");
     if (confirmSel) {

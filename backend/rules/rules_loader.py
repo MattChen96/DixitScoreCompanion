@@ -46,12 +46,14 @@ def _registry() -> dict[str, type[RulesEngine]]:
     """
     from backend.rules.casual_rules import CasualRules  # noqa: PLC0415
     from backend.rules.high_risk_rules import HighRiskRules  # noqa: PLC0415
+    from backend.rules.odyssey_rules import OdysseyRules  # noqa: PLC0415
     from backend.rules.standard_dixit import StandardDixitRules  # noqa: PLC0415
 
     return {
         "standard": StandardDixitRules,
         "high_risk": HighRiskRules,
         "casual": CasualRules,
+        "odyssey": OdysseyRules,
     }
 
 
