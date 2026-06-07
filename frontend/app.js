@@ -370,7 +370,7 @@
       return (
         '<label style="display:flex;align-items:flex-start;gap:0.5rem;margin-bottom:0.4rem;cursor:pointer">' +
         '<input type="radio" name="ruleset" value="' + opt.value + '"' + checked + ' style="margin-top:0.2rem">' +
-        '<span><strong>' + opt.label + '</strong> <span class="muted" style="font-size:0.85em">— ' + opt.desc + '</span></span>' +
+        '<span><strong class="keyword">' + opt.label + '</strong> <span class="muted" style="font-size:0.85em">— ' + opt.desc + '</span></span>' +
         '</label>'
       );
     }).join('');
@@ -518,7 +518,7 @@
         '<div class="panel">' +
         '<p class="muted">You are the host. When everyone has joined, start the game.</p>' +
         qrHtml +
-        '<p class="muted" style="text-align:center;margin:0 0 0.25rem">Room code: <strong>' + escapeHtml(state.gameId) + '</strong></p>' +
+        '<p class="muted" style="text-align:center;margin:0 0 0.25rem">Room code: <strong class="keyword">' + escapeHtml(state.gameId) + '</strong></p>' +
         '<button type="button" class="ghost" id="btn-copy-link" style="margin-bottom:0.75rem">Copia link</button>' +
         '<ul class="list" id="plist"></ul>' +
         '<button type="button" class="primary" id="btn-start"' +
@@ -1628,7 +1628,7 @@
           '<div class="score-row"><span>' +
           name +
           "</span><strong" +
-          (delta === 0 ? ' class="muted"' : "") +
+          (delta === 0 ? ' class="muted"' : ' class="keyword"') +
           ">" +
           pts +
           "</strong></div>"
@@ -1652,7 +1652,7 @@
           '<div class="score-row"><span>' +
           name +
           "</span><strong" +
-          (delta === 0 ? ' class="muted"' : "") +
+          (delta === 0 ? ' class="muted"' : ' class="keyword"') +
           ">" +
           pts +
           "</strong></div>"
@@ -1748,7 +1748,7 @@
           '<div class="score-row"><span>' +
           escapeHtml(p.nickname) +
           (p.id === state.playerId ? " (you)" : "") +
-          "</span><strong>" +
+          "</span><strong class=\"keyword\">" +
           p.score +
           "</strong></div>"
         );
